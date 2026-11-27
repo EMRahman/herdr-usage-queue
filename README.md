@@ -31,6 +31,11 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    on a `queue/<job>-<time>` branch from the remote's latest default branch (`origin/main`), then
    starts the agent there in a background space with the prompt as its first message.
 
+   If allowance reaches its reserve or the reading goes stale, the queue interrupts a working
+   agent and resumes it when allowance returns. The row shows the brake status. **Pause auto**
+   also pauses resumes. **Let it finish** in the launched job dialog overrides the brake for
+   that run.
+
 4. **PR and reviews** (optional, set per job under "When it's done"): **Open a PR** has the agent
    open a pull request when it's done. The queue then checks it on GitHub every 2 minutes and
    sends new review comments back to the agent, up to 3 rounds, each ending in
@@ -93,12 +98,17 @@ To remove it, delete the `usage-queue` block from the layout file and the mod fo
   "model": { "claude": "sonnet" },
   "effort": { "claude": "medium" },
   "priority": 2,
+  "permissions": "edit",
   "launch": "approve"
 }
 ```
 
 `model` and `effort` are optional. Set both to prefill the allocation for an agent.
 `"launch": "auto"` enables Auto when you click **Save allocation**.
+`"permissions"` selects **Agent default** (`"default"` or omitted), **Plan** (`"plan"`), or
+**Edit** (`"edit"`). You can also pick a profile when adding a job in Herdr. The selected agent
+uses its own permission flags for Plan and Edit. See [permission profiles](DESIGN.md#permission-profiles)
+for the mappings.
 `"after"` is the id (file name) of a job to wait for. `"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
 it on a 👍); it needs the GitHub CLI (`gh`) signed in.
 
@@ -117,6 +127,7 @@ Defaults are in `herdr-app/mods/usage-queue/catalog.js`. To change them, write
 ```
 
 Only `big` models run estimates. Antigravity models find their allowance group by their label.
+For a custom agent, set its `permissions` field to argv arrays for the profiles it supports.
 
 ## Files
 

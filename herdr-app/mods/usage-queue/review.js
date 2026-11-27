@@ -62,9 +62,10 @@ export function newFeedback(pr, me, handled) {
  * "approved" (👍 in review mode), "address" (send these items as the next round),
  * "needs-you" (new feedback after the last round), or "wait".
  */
-export function reviewStep(pr, watch, me, agentIdle) {
+export function reviewStep(pr, watch, me, agentIdle, braked = false) {
   if (pr.state === "MERGED") return { action: "merged", items: [] };
   if (pr.state === "CLOSED") return { action: "closed", items: [] };
+  if (braked) return { action: "wait", items: [] };
   const items = newFeedback(pr, me, watch.handled);
   const approved = approvedAt(pr);
   // A 👍 counts once the latest round has been sent, and when nothing newer asks for changes.

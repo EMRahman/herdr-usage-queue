@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CATALOG, estimateArgv, launchArgv, mergeCatalog, poolFor } from "../herdr-app/mods/usage-queue/catalog.js";
 import { estimatePrompt, parseEstimate } from "../herdr-app/mods/usage-queue/estimate.js";
 import {
-  agentLights, allocationFor, classify, dueToLaunch, estimatorChoices, jobText, pinnedRoute, proposeRoute, readJob,
+  agentLights, allocationFor, classify, dueToLaunch, estimatorChoices, jobText, pinnedRoute, proposeRoute, readJob, routeStatus,
 } from "../herdr-app/mods/usage-queue/queue.js";
 
 const catalog = mergeCatalog(null);
@@ -32,6 +32,29 @@ describe("catalog", () => {
     expect(estimateArgv(agent("agy"), "gemini-4-neon", "high", 'say {"x":1}').at(-1)).toBe('--print=say {"x":1}');
   });
 
+  test("permission profiles map to each agent's own flags", () => {
+    expect(launchArgv(agent("claude"), "sonnet", "medium", "edit").slice(-2)).toEqual(["--permission-mode", "acceptEdits"]);
+    expect(launchArgv(agent("claude"), "sonnet", "medium", "plan").slice(-2)).toEqual(["--permission-mode", "plan"]);
+    expect(launchArgv(agent("codex"), "gpt-6.2-sol", "high", "edit").slice(-4))
+      .toEqual(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);
+    expect(launchArgv(agent("codex"), "gpt-6.2-sol", "high", "plan").slice(-4))
+      .toEqual(["--sandbox", "read-only", "--ask-for-approval", "never"]);
+    expect(launchArgv(agent("agy"), "gemini-4-neon", "high", "edit").slice(-2)).toEqual(["--mode", "accept-edits"]);
+    expect(launchArgv(agent("agy"), "gemini-4-neon", "high", "plan").slice(-2)).toEqual(["--mode", "plan"]);
+  });
+
+  test("an explicit profile cannot fall back to a custom agent's defaults", () => {
+    const c = mergeCatalog({ agents: [{ id: "pi", name: "Pi", run: ["pi"], pool: "claude", models: [], efforts: [] }] });
+    const route = { agent: "pi" };
+    const judged = { claude: j("green") };
+    expect(routeStatus(c, route, pools, judged).judgement.light).toBe("green");
+    expect(routeStatus(c, route, pools, judged, "edit").judgement.reason).toContain("does not support");
+    expect(proposeRoute(c, { routes: [route, { agent: "codex" }] }, pools, judged, "edit")).toEqual({ agent: "codex" });
+    expect(() => launchArgv(c.agents.at(-1), null, null, "edit")).toThrow("permission profile");
+    c.agents.at(-1).permissions = { edit: ["--my-permissions", "edit"] };
+    expect(launchArgv(c.agents.at(-1), null, null, "edit")).toEqual(["pi", "--my-permissions", "edit"]);
+  });
+
   test("an override replaces an agent's fields and can add agents", () => {
     const c = mergeCatalog({ agents: [{ id: "claude", run: ["my-claude"] }, { id: "pi", name: "Pi", run: ["pi"], models: [], efforts: [] }] });
     expect(c.agents.find((a) => a.id === "claude").run).toEqual(["my-claude"]);
@@ -46,6 +69,14 @@ describe("jobs", () => {
     const { job } = readJob("flaky", text);
     expect(job).toMatchObject({ id: "flaky", title: "Flaky tests", repo: "~/Code/app", agents: ["claude", "codex"], priority: 2, after: null });
     expect(text).not.toContain("after");
+    expect(job.permissions).toBe("default");
+    expect(text).not.toContain("permissions");
+  });
+
+  test("permission profiles round-trip and an unknown name is rejected", () => {
+    const text = jobText({ title: "Plan", prompt: "Inspect it", repo: "/repo", permissions: "plan" });
+    expect(readJob("plan", text).job.permissions).toBe("plan");
+    expect(readJob("bad", text.replace('"plan"', '"bypass"')).error).toContain("Permissions");
   });
 
   test("a job file keeps the job it waits for", () => {

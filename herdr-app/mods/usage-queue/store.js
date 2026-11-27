@@ -161,8 +161,8 @@ const CONSUMER_ID = "usage-queue";
  * The pools to judge: Usage Monitor's published readings, else its bridge's. Throws when there
  * are none to be had.
  *
- * `fresh`: the queue needs current readings (a job waits on Auto). It then checks in with Usage
- * Monitor as a consumer, so Usage Monitor keeps reading while its readout is hidden. Without
+ * `fresh`: a job is scheduled, being watched, or waiting to resume. The queue checks in with
+ * Usage Monitor as a consumer, so Usage Monitor keeps reading while its readout is hidden. Without
  * published readings (an older Usage Monitor, or none of its views open), it asks the bridge,
  * which refreshes only what's due.
  */
