@@ -165,8 +165,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   to run commands. `agy` also needs the prompt attached: `--print=<prompt>`.
 - **Setting a text field fires its change handler**: set the other fields before `set_value`.
 - Dates are formatted by hand: the runtime ignores `toLocaleString`'s options.
-- No brake yet: a launched job isn't stopped if its pool reaches the reserve, and the queue
-  doesn't detect when it's done. Agents still stop at permission prompts.
+- No brake yet: a launched job isn't stopped if its pool reaches the reserve (drafted in
+  DESIGN.md, [Brake](../DESIGN.md#5-brake)). Agents still stop at permission prompts.
 - Needs Usage Monitor installed (its bridge), Bun, git, and at least one of the agent CLIs.
 
 ## Done when

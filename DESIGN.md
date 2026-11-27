@@ -1,6 +1,8 @@
 # Usage Queue: design
 
-Status: draft, revised 2026-11-27. Milestones 1 and 2 are built (`herdr-app/mods/usage-queue/`).
+Status: draft, revised 2026-11-27. Built (`herdr-app/mods/usage-queue/`): milestones 1 and 2,
+and from milestone 4 Auto launch, done detection, PR reviews and cleanup after a merge. Not
+built: milestone 3 (the contract), the [brake](#5-brake) and permission profiles.
 
 **Usage Queue** is a Herdr app mod that holds a queue of agent jobs. When one of your
 subscriptions has allowance that would otherwise reset unused, it proposes a job for it, with a
@@ -206,10 +208,95 @@ more, and comes after v1.
 
 ### 5. Brake
 
-While a job runs, the queue keeps reading its pool. When headroom reaches zero, it stops the
-job: it interrupts the agent, keeps the worktree, and puts the job back in the queue marked
-`stopped: reserve`. Readings lag, so the brake can overshoot by about one reading; the reserve
-absorbs that. This, not the cost estimate, is what makes the reserve a guarantee.
+Draft, 2026-11-27. Not built yet.
+
+While a job runs, the queue keeps reading its pool. When the pool reaches its reserve, the queue
+**interrupts** the agent: it presses the agent's stop key with `hc interrupt <terminal>`, as Esc
+would. It doesn't kill the agent. The agent stays open in its space with its conversation, and
+the worktree stays as it is. When the pool has allowance again, the queue tells the same agent
+to carry on. Readings lag, so the brake can overshoot by about one reading; the reserve absorbs
+that. This, not the cost estimate, is what makes the reserve a guarantee.
+
+**What it watches.** Every job the queue launched, by Launch or Auto, that is still running:
+`state.jobs[id].launched` has the pool, the terminal and the folder. An agent that isn't
+`working` (idle, done, or blocked on a prompt) isn't spending, so it isn't touched.
+
+**When it brakes.** On each reading (every 60 s), for the job's pool:
+
+- **At the reserve:** headroom (the tightest window's `leftPct` minus its reserve) is 0 or less.
+  Launches need 5 points of headroom (`MIN_JOB_COST`), so a job that starts near the line
+  isn't braked at once.
+- **Stale reading:** the reading is older than the light's staleness limit, so the queue can't
+  tell whether the reserve is safe. This only works if readings keep coming while jobs run.
+  Today the queue asks Usage Monitor for fresh readings only while a job is on Auto
+  (`readReport(hasScheduled())`), so that becomes `hasScheduled() || hasRunning()`. Once
+  milestone 3 ships, the consumer keepalive does the same job.
+- Not when you said **Let it finish** for that job (below).
+
+The pool's light can be red for your own work as much as the job's. That's the point: the
+reserve is for you.
+
+**How it brakes.**
+
+1. `hc interrupt <terminal> --json`, which reports whether the agent stopped. Set
+   `launched.braked = { at, reason, pool }`. Record a `braked` history event. Notify once:
+   "Braked: <job>. Claude 5h is at its reserve (24% left). Resumes in about 2h 10m."
+2. If the agent is still `working` on the next reading, try once more. After two attempts, stop
+   trying and notify. Never kill the agent: that loses its context, and you can stop it yourself.
+
+**While braked.**
+
+- The row shows "Braked · resumes in 2h 10m" (the pool's `changesAt`), or "Braked · stale
+  reading".
+- **It isn't finished.** An interrupted agent goes idle, which today counts as finished for a
+  job without a PR (`trackFinish`). That would wrongly let the jobs waiting on it launch. A
+  braked job doesn't finish, and the "stopped without opening a PR" warning doesn't fire.
+- **No review rounds.** Review rounds wait. `hc send` to a braked agent would start it spending
+  again.
+- **You can take over.** If the agent starts working without the queue resuming it, you typed to
+  it. The brake mark is cleared, the job is marked `takenOver`, and it isn't braked again: you're
+  driving it now.
+
+**Resuming.** When the pool's light leaves red, the queue sends "The allowance is back. Carry on
+where you left off." to the same agent (`hc send --if idle`). It clears `braked` and records
+`resumed`. Resumes follow the same limits as Auto launches:
+
+- one per pool per settle period (10 min), and a resume counts as a launch for that limit;
+- jobs by priority;
+- none while **Pause auto** is on.
+
+If the agent is gone (its space closed, or Herdr restarted), a new agent starts in the same
+worktree. It gets the job's prompt, prefixed with "Earlier work on this job is in this worktree
+(branch <branch>): check `git status` and `git log` first." That's how `sendRound` already
+replaces a missing agent.
+
+**Let it finish.** A button in the launched job's dialog sets `launched.noBrake`. It's for when
+you'd rather spend the reserve than lose momentum. New launches on that pool still wait.
+
+**Code.** The decision is a pure function next to `dueToLaunch` in `queue.js`, tested from
+recorded readings:
+
+```
+brakeSteps(jobs, state, pools, judged, agentStatus, now)
+  → [{ job, step: "brake" | "retry" | "resume" | "restart" | "taken-over", reason }]
+```
+
+`main.js` runs the steps (`hc interrupt`, `hc send`, `space.new`) on the 60 s readings tick.
+
+**Tests.**
+
+- Braking and resuming:
+  - brake at headroom 0 and when the reading is stale;
+  - no brake for an idle or blocked agent, or with Let it finish;
+  - retry, then give up;
+  - resume when the light leaves red, one per pool per settle period, none while paused;
+  - restart when the agent is gone;
+  - taken over when it works without a resume.
+- Jobs waiting on a braked one stay blocked.
+- Review rounds wait while their job is braked.
+
+**Not in this step.** `maxMinutes` (a time limit) can use the same interrupt later. Cost
+learning comes later too: the drop from launch to brake is a lower bound on that run's cost.
 
 ### Held resets (later)
 
@@ -396,11 +483,9 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 
 ## Open questions
 
-1. After the brake stops a job, does it restart from scratch or resume the agent's session
-   (where the agent supports resuming)?
-2. How should `expectedUse` be learned: per weekday from Usage Monitor's history, or a single
+1. How should `expectedUse` be learned: per weekday from Usage Monitor's history, or a single
    "share of the week you usually use"?
-3. Name check: "Usage Queue" / `herdr-usage-queue`. Alternative: "Untapped".
+2. Name check: "Usage Queue" / `herdr-usage-queue`. Alternative: "Untapped".
 
 ## Milestones
 
@@ -412,7 +497,9 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 3. **Contract**: Usage Monitor publishes `usage-monitor.windows` (+ consumers keepalive), so
    readings keep coming while its readout is hidden.
 4. **Auto-launch**: the auto-launch toggle and `"launch": "auto"`. This is the first unattended
-   run, so it brings done detection, the brake and permission profiles.
+   run, so it brings done detection, the brake and permission profiles. Built: Auto, done
+   detection (agent idle, PR merged, Mark finished), PR review rounds, cleanup after a merge.
+   Not built: the [brake](#5-brake) (drafted) and permission profiles.
 5. Job-writing prompt, cost learning per size and route, repeat and deadline,
    background and space runs.
 6. Later: global auto approval, learned `expectedUse`, daemon mode (with the move to a
