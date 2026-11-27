@@ -4,6 +4,7 @@
 import { appHome, exec, readTextFile, run } from "herdr";
 import { estimateArgv, launchArgv } from "./catalog.js";
 import { resolveBase } from "./base.js";
+import { prInstructions } from "./review.js";
 import { answerText, estimatePrompt, parseEstimate } from "./estimate.js";
 import { expandHome, writeEstimateLog } from "./store.js";
 import { stamp } from "./time.js";
@@ -91,7 +92,7 @@ async function worktreeRoot() {
  * branch, fetched now) and starts the agent there with the job's prompt as its first message, in
  * a new space that doesn't take focus. Resolves with { branch, folder, argv, base }.
  */
-export async function launchJob({ job, agent, model, effort }) {
+export async function launchJob({ job, agent, model, effort, pr = "off" }) {
   const repo = expandHome(job.repo);
   const top = await git(repo, ["rev-parse", "--show-toplevel"]);
   if (!top.ok) throw new Error(`${job.repo} isn't a git repository.`);
@@ -105,6 +106,9 @@ export async function launchJob({ job, agent, model, effort }) {
   const add = await git(top.out, ["worktree", "add", "-b", branch, folder, base.commit], 600_000);
   if (!add.ok) throw new Error(add.err || "git worktree add failed.");
   const argv = launchArgv(agent, model, effort);
-  run("space.new", { folder, argv, task: job.prompt, focus: false });
+  // With a PR wanted, the agent opens it when it's done; the queue then watches the reviews.
+  const baseBranch = base.ref.includes("/") ? base.ref.split("/").slice(1).join("/") : null;
+  const task = pr === "off" ? job.prompt : job.prompt + "\n" + prInstructions({ branch, baseBranch, mode: pr });
+  run("space.new", { folder, argv, task, focus: false });
   return { branch, folder, argv, base };
 }

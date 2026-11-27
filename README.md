@@ -32,6 +32,13 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    on a `queue/<job>-<time>` branch from the remote's latest default branch (`origin/main`), then
    starts the agent there in a background space with the prompt as its first message.
 
+5. **PR and reviews** (optional, set per job under "When it's done"): **Open a PR** has the agent
+   open a pull request when it's done. The queue then checks it on GitHub every 2 minutes and
+   sends new review comments back to the agent, up to 3 rounds, each ending in
+   `@codex review`. **PR + merge on 👍** also merges it once it gets a 👍 (a 👍 reaction, an
+   approving review, or Codex's "Didn't find any major issues"). New comments after the third
+   round, or a failed merge, are handed to you with a notification.
+
 Editing a job file after approval sends it back to Pending Launch Approval.
 
 ## The lights
@@ -73,6 +80,8 @@ To remove it, delete the `usage-queue` block from the layout file and the mod fo
 ```
 
 `model` and `effort` are optional: with both set for an agent, the estimate is skipped.
+`"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
+it on a 👍); it needs the GitHub CLI (`gh`) signed in.
 
 `"base"` is the commit the job starts from, taken at launch: `"remote"` (default: fetch, then the
 remote's default branch, i.e. the repo's latest on GitHub), `"local"` (your checkout's HEAD,

@@ -95,6 +95,18 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **Auto**: with allowance now (light not red), the same as Launch. Otherwise the job waits;
   each minute the queue launches Auto jobs whose light has left red, by priority, at most one
   per pool, and none on a pool something launched on in the last 10 minutes. Never on red.
+- **PR and reviews** (`"pr"`, or "When it's done" in the dialogs: No PR / Open a PR / PR +
+  merge on 👍): the launch adds instructions to the prompt (commit, push the branch, `gh pr
+  create`, don't merge). The sidebar copy then checks every 30s which agent is in the worktree
+  and, every 2 minutes, GitHub through `gh`: first `gh pr list --head <branch>`, then the PR's
+  reactions, comments, reviews and inline comments. A 👍 (reaction, approving review, or
+  "Didn't find any major issues") newer than the last round merges it (squash, else merge, else
+  rebase) or, in review mode, notifies you. Otherwise new feedback (inline comments, change
+  requests, others' comments; not yours, not Codex's summary) goes to the agent with
+  `hc send --if idle` as "Review round N of 3", ending in "@codex review"; a new agent is started
+  in the worktree if the old one is gone. New feedback after round 3, a failed merge, or a day
+  with nothing happening ends the watch, with a notification. Launched rows show "PR #12 ·
+  round 1/3", "Merged #12", "👍 #12" or "Needs you #12".
 - **Draft**: the add form is kept in memory and in `usage-queue/draft.json` (half a second after
   typing stops, and when it closes), so Esc never loses it.
 - **History**: every event (added, estimated, approved, scheduled, launched, …) is appended to
@@ -118,7 +130,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   `readTextFile`, `writeTextFile`, `watchFolder`, `knownAgents`, `pickFolder`, `notify`,
   `focused`, `panes`, `spaces`, `appHome`, `home`, `checking`; `fs/promises` and `crypto`.
 - **Programs it runs**: Bun (Usage Monitor's bridge, which reaches the providers' usage
-  endpoints), `git`, the agent CLIs (`claude`, `codex`, `agy`), and `open` for a log. It reads
+  endpoints), `git`, the agent CLIs (`claude`, `codex`, `agy`), `gh` (GitHub, for PR jobs:
+  reads the PR, merges it), `hc send` (review rounds), and `open` for a log or a PR. It reads
   only its own folder, Herdr's `settings.json`, Usage Monitor's mod folder and the jobs' repos.
 
 ## Watch out

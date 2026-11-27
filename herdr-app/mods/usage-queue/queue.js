@@ -3,6 +3,7 @@
 
 import { agentOf, estimators, modelOf, poolFor, poolsOfAgent } from "./catalog.js";
 import { baseOf } from "./base.js";
+import { prModeOf } from "./review.js";
 import { better } from "./rule.js";
 
 /** A job file's contents, checked. Returns { job } or { error }. */
@@ -27,15 +28,16 @@ export function readJob(id, text) {
       effort: raw.effort && typeof raw.effort === "object" ? raw.effort : {},
       launch: raw.launch === "auto" ? "auto" : "approve",
       base: baseOf(raw),
+      pr: prModeOf(raw),
       raw,
     },
   };
 }
 
 /** A new job file's text. */
-export function jobText({ title, prompt, repo, agents, priority }) {
+export function jobText({ title, prompt, repo, agents, priority, pr = "off" }) {
   return JSON.stringify({
-    about: title, prompt, where: { worktree: { repo } }, agents, priority, launch: "approve",
+    about: title, prompt, where: { worktree: { repo } }, agents, priority, launch: "approve", pr,
   }, null, 2) + "\n";
 }
 

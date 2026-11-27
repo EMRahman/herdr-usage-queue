@@ -13,11 +13,13 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import {
-  checking, closeOverlay, exec, focused, knownAgents, notify, openOverlay, panes, pickFolder, props, run,
+  agents, checking, closeOverlay, exec, focused, knownAgents, notify, openOverlay, panes, pickFolder, props, run,
   setShared, shared, spaces, theme, watchFolder,
 } from "herdr";
-import { agentOf, estimatorEffort, mergeCatalog, modelOf } from "./catalog.js";
+import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
+import { fetchPR, findPR, mergePR, myLogin } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
+import { MAX_ROUNDS, reviewStep, roundMessage } from "./review.js";
 import {
   agentLights, classify, dueToLaunch, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
 } from "./queue.js";
@@ -33,6 +35,12 @@ const REVISION = `${ID}.revision`;
 const POLL_MS = 60_000;
 /** After any launch on a pool, scheduled launches leave it alone this long: readings lag use. */
 const SETTLE_MS = 10 * 60_000;
+/** How often a PR (or the branch, before it has one) is checked on GitHub. */
+const PR_POLL_MS = 2 * 60_000;
+/** A PR watch with nothing happening for this long stops. */
+const WATCH_FOR_MS = 24 * 3_600_000;
+const PR_DONE = new Set(["merged", "closed", "approved", "needs-you", "ended"]);
+const PR_MODE_TEXT = { off: "No PR", review: "Open a PR", merge: "PR + merge on 👍" };
 const BUSY_MS = 50_000;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Fixed light colors, as Usage Monitor's: their meaning shouldn't depend on the theme.
@@ -180,8 +188,12 @@ async function doLaunch({ id, auto = false }) {
   running.launches.add(id);
   changed();
   try {
-    const launched = await launchJob({ job, agent, model: route.model, effort: route.effort });
+    const prMode = s.approval.pr ?? job.pr ?? "off";
+    const launched = await launchJob({ job, agent, model: route.model, effort: route.effort, pr: prMode });
     const entry = { at: Date.now(), hash: job.hash, route, pool: pool?.id ?? null, light: judgement.light, ...launched };
+    if (prMode !== "off") {
+      entry.pr = { mode: prMode, phase: "working", number: null, url: "", rounds: 0, handled: [], sentAt: 0, terminal: null, changedAt: Date.now() };
+    }
     data.state = await updateState((st) => { st.jobs[id] = { ...(st.jobs[id] ?? {}), launched: entry }; });
     await record({ type: "launched", job: id, auto, route, pool: pool?.id ?? null, light: judgement.light, reason: judgement.reason, ...launched });
     notify({ title: `${auto ? "Allowance is back: launched" : "Launched"}: ${job.title}`, body: `${agent.name} · ${route.model} · ${route.effort} in ${launched.branch}, from ${baseText(launched.base)}`
@@ -194,6 +206,132 @@ async function doLaunch({ id, auto = false }) {
     running.launches.delete(id);
     changed();
   }
+}
+
+// --- After launch: the PR and its review rounds ---
+
+const polledAt = new Map();
+
+async function patchWatch(id, changes) {
+  data.state = await updateState((s) => {
+    const w = s.jobs[id]?.launched?.pr;
+    if (w) Object.assign(w, changes);
+  });
+  changed();
+}
+
+/** The agent working in a launched job's worktree: its terminal address, or null. */
+function agentIn(folder) {
+  const cwd = new Map(panes().map((p) => [p.pane, p.cwd ?? ""]));
+  return agents().find((a) => (cwd.get(a.pane) ?? "").startsWith(folder))?.address ?? null;
+}
+
+/** Hands a review round to the job's agent, or to a new one in its worktree if it's gone. */
+async function sendRound(job, launched, message) {
+  const terminal = launched.pr.terminal;
+  const agent = terminal ? agents().find((a) => a.address === terminal) : null;
+  if (agent) {
+    const r = await exec("hc", ["send", "--if", "idle", terminal, message], { timeout: 75_000 });
+    return r.code === 0;
+  }
+  const route = launched.route;
+  const entry = agentOf(data.catalog, route.agent);
+  if (!entry) return false;
+  run("space.new", {
+    folder: launched.folder, argv: launchArgv(entry, route.model, route.effort), focus: false,
+    task: `You're continuing work on this branch (${launched.branch}), which has an open pull request.\n\n${message}`,
+  });
+  return true;
+}
+
+/** Checks every launched job that's waiting for its PR or under review, and takes the next step. */
+async function watchPRs() {
+  const now = Date.now();
+  for (const job of data.jobs) {
+    const launched = jobState(job.id).launched;
+    const w = launched?.pr;
+    if (!w || PR_DONE.has(w.phase)) continue;
+    const id = job.id;
+    const terminal = (w.terminal && agents().some((a) => a.address === w.terminal)) ? w.terminal : agentIn(launched.folder);
+    const agent = terminal ? agents().find((a) => a.address === terminal) : null;
+    if (terminal !== w.terminal) await patchWatch(id, { terminal });
+    if (agent?.status === "working" && !w.worked) await patchWatch(id, { worked: true });
+    if (now - (polledAt.get(id) ?? 0) < PR_POLL_MS) continue;
+    polledAt.set(id, now);
+    if (now - (w.changedAt ?? launched.at) > WATCH_FOR_MS) {
+      await patchWatch(id, { phase: "ended" });
+      notify({ title: `Stopped watching: ${job.title}`, body: "Nothing happened for a day.", level: "info" });
+      continue;
+    }
+    const idle = !agent || agent.status === "idle" || agent.status === "done";
+    try {
+      if (!w.number) {
+        const found = await findPR(launched.folder, launched.branch);
+        if (found) {
+          await patchWatch(id, { number: found.number, url: found.url, phase: "in-review", changedAt: now });
+          await record({ type: "pr-opened", job: id, number: found.number, url: found.url });
+          notify({ title: `PR #${found.number} opened: ${job.title}`, body: "Watching it for reviews.", level: "info" });
+        } else if (w.worked && agent && idle && !w.idleNoted) {
+          await patchWatch(id, { idleNoted: true });
+          notify({ title: `${job.title}: no PR yet`, body: "The agent stopped without opening one. It may be asking you something.", level: "warning" });
+        }
+        continue;
+      }
+      const pr = await fetchPR(launched.folder, w.number);
+      const step = reviewStep(pr, w, await myLogin(launched.folder), idle);
+      if (step.action === "merged" || step.action === "closed") {
+        await patchWatch(id, { phase: step.action, changedAt: now });
+        await record({ type: `pr-${step.action}`, job: id, number: w.number });
+      } else if (step.action === "merge") {
+        try {
+          const how = await mergePR(launched.folder, w.number);
+          await patchWatch(id, { phase: "merged", changedAt: now });
+          await record({ type: "pr-merged", job: id, number: w.number, how, by: "queue" });
+          notify({ title: `Merged PR #${w.number}: ${job.title}`, body: `It got a 👍 (${how}).`, level: "info" });
+        } catch (e) {
+          await patchWatch(id, { phase: "needs-you", error: String(e?.message ?? e), changedAt: now });
+          notify({ title: `Couldn't merge PR #${w.number}`, body: String(e?.message ?? e), level: "error" });
+        }
+      } else if (step.action === "approved") {
+        await patchWatch(id, { phase: "approved", changedAt: now });
+        await record({ type: "pr-approved", job: id, number: w.number });
+        notify({ title: `👍 on PR #${w.number}: ${job.title}`, body: "Ready for you to merge.", level: "info" });
+      } else if (step.action === "needs-you") {
+        await patchWatch(id, { phase: "needs-you", changedAt: now });
+        await record({ type: "pr-needs-you", job: id, number: w.number });
+        notify({ title: `PR #${w.number} needs you: ${job.title}`, body: `${MAX_ROUNDS} review rounds are done and there are new comments.`, level: "warning" });
+      } else if (step.action === "address") {
+        const round = (w.rounds ?? 0) + 1;
+        const message = roundMessage({ round, number: w.number, url: w.url, branch: launched.branch, items: step.items, mode: w.mode });
+        if (await sendRound(job, launched, message)) {
+          await patchWatch(id, {
+            rounds: round, sentAt: now, changedAt: now, handled: [...(w.handled ?? []), ...step.items.map((x) => x.id)],
+          });
+          await record({ type: "pr-round", job: id, number: w.number, round, comments: step.items.length });
+          notify({ title: `Review round ${round}/${MAX_ROUNDS}: ${job.title}`, body: `${step.items.length} comment(s) sent to the agent.`, level: "info" });
+        }
+      }
+    } catch (e) {
+      await patchWatch(id, { error: String(e?.message ?? e) });
+    }
+  }
+}
+
+/** A launched job's PR status, for its row: "PR #12 · round 1/3", "Merged", … */
+function prStatus(w) {
+  if (!w) return "";
+  if (w.phase === "working") return "Working";
+  if (w.phase === "merged") return `Merged #${w.number}`;
+  if (w.phase === "closed") return `Closed #${w.number}`;
+  if (w.phase === "approved") return `👍 #${w.number}`;
+  if (w.phase === "needs-you") return `Needs you #${w.number}`;
+  if (w.phase === "ended") return "Stopped watching";
+  return `PR #${w.number}${w.rounds ? ` · round ${w.rounds}/${MAX_ROUNDS}` : ""}`;
+}
+
+async function setPrMode(job, pr) {
+  data.state = await updateState((s) => { if (s.jobs[job.id]?.approval) s.jobs[job.id].approval.pr = pr; });
+  changed();
 }
 
 /** Hands work to a sidebar copy, which outlives dialogs. Without one, runs it in this copy and
@@ -219,11 +357,11 @@ function loadIfNeeded(cx) {
   });
 }
 
-async function approve(job, route, auto) {
+async function approve(job, route, auto, pr = "off") {
   data.state = await updateState((s) => {
-    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto } };
+    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr } };
   });
-  await record({ type: "approved", job: job.id, route, auto });
+  await record({ type: "approved", job: job.id, route, auto, pr });
   changed();
 }
 
@@ -351,6 +489,8 @@ export default class UsageQueue extends View {
       await refreshReadings();
       await launchScheduled();
     }));
+    // Launched jobs' PRs: each is checked on GitHub every 2 minutes (see watchPRs).
+    cx.timer.every(30_000, (cx) => cx.spawn(async () => watchPRs()));
     // Dialogs hand their work here so that closing them doesn't cancel it.
     cx.timer.every(1000, (cx) => {
       while (queue.length) {
@@ -441,7 +581,10 @@ export default class UsageQueue extends View {
         ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
         : div().text_size(11.5).text_color(text === "Failed" ? LIGHT.red : t.dim).child(text);
     } else {
-      right = div().text_size(11).text_color(t.dim).child(s.launched?.at ? ago(s.launched.at) : "");
+      const w = s.launched?.pr;
+      const tone = !w ? t.dim : w.phase === "merged" || w.phase === "approved" ? LIGHT.green
+        : w.phase === "needs-you" ? LIGHT.yellow : t.muted;
+      right = div().text_size(11).text_color(tone).child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : "");
     }
     const tip = kind === "launched"
       ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}`
@@ -701,10 +844,35 @@ export default class UsageQueue extends View {
         body.push(div().pt(4).text_size(12).text_color(t.muted)
           .child(`${ago(s.launched.at)} on ${s.launched.branch}, from ${baseText(s.launched.base)}, in ${s.launched.folder}`));
         if (s.launched.base?.note) body.push(div().pt(4).text_size(12).text_color(LIGHT.yellow).child(s.launched.base.note));
+        const w = s.launched.pr;
+        if (w) {
+          body.push(h_flex().pt(10).gap(8).items_center()
+            .child(div().flex_1().text_size(12.5).font_medium().child(`${PR_MODE_TEXT[w.mode]}: ${prStatus(w)}`))
+            .when(Boolean(w.url), (el) => el.child(chip(t, "open-pr", "Open PR", false, (_e, cx) => cx.spawn(async () => exec("open", [w.url])), w.url)))
+            .when(!PR_DONE.has(w.phase), (el) => el.child(chip(t, "stop-watch", "Stop watching", false,
+              (_e, cx) => cx.spawn(async () => { await patchWatch(job.id, { phase: "ended" }); cx.notify(); })))));
+          body.push(div().pt(4).text_size(11.5).text_color(t.dim).child(w.number
+            ? `Checked every 2 minutes. Review comments go to the agent, at most ${MAX_ROUNDS} rounds${w.mode === "merge" ? "; a 👍 merges it" : ""}.`
+            : "Waiting for the agent to open the PR."));
+          if (w.error) body.push(div().pt(4).text_size(11.5).text_color(LIGHT.yellow).child(w.error));
+        }
       }
     } else {
       if (!pinnedRoute(data.catalog, job)) body.push(...this.estimateSection(t, job));
       if (route) body.push(...this.proposalSection(t, job, route));
+    }
+    // When it's done: a PR, and its reviews. Chosen before launch.
+    if (!launched) {
+      const current = approved ? s.approval.pr ?? job.pr : (this.pr ??= job.pr);
+      body.push(this.section(t, "When it's done"));
+      body.push(h_flex().gap(6).items_center().children(["off", "review", "merge"].map((m) => chip(t, `pr-${m}`, PR_MODE_TEXT[m],
+        current === m, (_e, cx) => {
+          if (approved) cx.spawn(async () => setPrMode(job, m));
+          else { this.pr = m; cx.notify(); }
+        }))));
+      body.push(div().pt(6).text_size(11.5).text_color(t.dim).child(current === "off"
+        ? "The agent just does the work."
+        : `The agent opens a PR. The queue watches it: review comments go back to the agent (up to ${MAX_ROUNDS} rounds, each ending in "@codex review")${current === "merge" ? ", and a 👍 merges it" : ", and you merge it"}.`));
     }
 
     const launching = running.launches.has(job.id);
@@ -729,7 +897,7 @@ export default class UsageQueue extends View {
     } else {
       footer.child(button(t, "approve", "Approve", "primary", (_e, cx) => cx.spawn(async () => {
         // Approving never launches; "launch": "auto" in the file starts it on Auto.
-        await approve(job, { size: "m", why: "", ...route }, job.launch === "auto");
+        await approve(job, { size: "m", why: "", ...route }, job.launch === "auto", this.pr ?? job.pr);
         closeOverlay(p.overlay);
       }), !route));
     }
@@ -782,6 +950,7 @@ export default class UsageQueue extends View {
     this.repo = d?.repo || this.focusedRepo;
     this.agents = new Set(d?.agents ?? ["claude", "codex"]);
     this.priority = d?.priority ?? 2;
+    this.prMode = d?.pr ?? "off";
     this.title.set_value(d?.title ?? "");
     this.prompt.set_value(d?.prompt ?? "");
   }
@@ -791,7 +960,7 @@ export default class UsageQueue extends View {
     if (!this.agents) return;
     const d = {
       title: this.title.value(), prompt: this.prompt.value(), repo: this.repo,
-      agents: [...this.agents], priority: this.priority, at: Date.now(),
+      agents: [...this.agents], priority: this.priority, pr: this.prMode, at: Date.now(),
     };
     draft = d.title.trim() || d.prompt.trim() ? d : null;
     const seq = ++this.draftSeq;
@@ -817,7 +986,7 @@ export default class UsageQueue extends View {
       if (!can) return;
       try {
         const id = jobId(title);
-        await writeNewJob(id, jobText({ title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority }));
+        await writeNewJob(id, jobText({ title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority, pr: this.prMode }));
         await record({ type: "added", job: id });
         draft = null;
         this.draftSeq++;
@@ -860,6 +1029,10 @@ export default class UsageQueue extends View {
       .child(label("Priority"))
       .child(h_flex().gap(6).children([1, 2, 3].map((n) => chip(t, `prio-${n}`, ["", "1 · high", "2 · normal", "3 · low"][n],
         this.priority === n, (_e, cx) => { this.priority = n; this.keepDraft(cx); cx.notify(); }))))
+      .child(label("When it's done"))
+      .child(h_flex().gap(6).children(["off", "review", "merge"].map((m) => chip(t, `addpr-${m}`, PR_MODE_TEXT[m],
+        this.prMode === m, (_e, cx) => { this.prMode = m; this.keepDraft(cx); cx.notify(); },
+        m === "off" ? null : `Open a PR, then address review comments (up to ${MAX_ROUNDS} rounds)${m === "merge" ? " and merge it on a 👍" : ""}.`))))
       .when(Boolean(this.error), (el) => el.child(div().pt(10).text_size(12).text_color(LIGHT.red).child(this.error)))
       .child(div().pt(10).text_size(11).text_color(t.dim)
         .child(`Saved as a file in ${paths().jobs}. ⌘↵ adds it. Esc or Close keeps this as a draft.`))
