@@ -42,6 +42,8 @@ function window(label, leftPct, resetsAt, kindText = label) {
   };
 }
 
+/** A percentage figure: null or "" is no figure, not 0. */
+const isPct = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 const slug = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /**
@@ -54,7 +56,7 @@ export function poolsFromReport(report) {
   const readAt = (key) => report.read_at?.[key] ?? report.timestamp ?? null;
   const ttl = (key) => report.ttl?.[key] ?? report.ttl?.others ?? null;
   const usedWindows = (list) => (list ?? [])
-    .filter((w) => Number.isFinite(Number(w?.used_percent)))
+    .filter((w) => isPct(w?.used_percent))
     .map((w) => window(w.label, 100 - Number(w.used_percent), w.resets_at));
 
   for (const [key, name] of [["claude", "Claude"], ["codex", "Codex"]]) {
@@ -73,7 +75,7 @@ export function poolsFromReport(report) {
       models: String(group.models ?? "").split(",").map((m) => m.trim()).filter(Boolean),
       readAt: readAt("antigravity"), ttl: ttl("antigravity"),
       windows: (group.buckets ?? [])
-        .filter((b) => Number.isFinite(Number(b?.remaining_percent)))
+        .filter((b) => isPct(b?.remaining_percent))
         .map((b) => window(b.label, Number(b.remaining_percent), b.resets_at)),
     });
   }
@@ -84,11 +86,56 @@ export function poolsFromReport(report) {
       id: p.id, provider: p.id, name: p.name ?? p.id, account: p.account ?? null, plan: p.plan ?? null,
       models: null, readAt: readAt(p.id), ttl: ttl(p.id),
       windows: p.windows
-        .filter((w) => Number.isFinite(Number(w?.used_percent)))
+        .filter((w) => isPct(w?.used_percent))
         .map((w) => window([w.kind, w.scope].filter(Boolean).join(" · "), 100 - Number(w.used_percent), w.resets_at, w.kind)),
     });
   }
   return pools;
+}
+
+// --- Usage Monitor's published readings (DESIGN.md: Data contract with Usage Monitor) ---
+
+/** Shared-state keys Usage Monitor publishes and reads. */
+export const WINDOWS_KEY = "usage-monitor.windows";
+export const CONSUMERS_KEY = "usage-monitor.consumers";
+/** Usage Monitor reads every minute while anyone is registered; older than this, nobody is
+ *  publishing (an old Usage Monitor, or no readout open), so the queue asks the bridge itself. */
+export const CONTRACT_FRESH_MS = 5 * 60_000;
+
+const KINDS = new Set(["5h", "weekly", "daily", "monthly", "other"]);
+const PROVIDER_NAMES = { claude: "Claude", codex: "Codex", cursor: "Cursor", copilot: "GitHub Copilot", grok: "Grok", opencode: "OpenCode" };
+
+/** Whether Usage Monitor's published readings are there and current enough to use. */
+export function contractUsable(contract, now = Date.now()) {
+  return contract?.version === 1 && Array.isArray(contract.pools)
+    && Number.isFinite(contract.checkedAt) && now - contract.checkedAt < CONTRACT_FRESH_MS;
+}
+
+/** Pools from Usage Monitor's published readings (`shared("usage-monitor.windows")`). */
+export function poolsFromContract(contract) {
+  if (!Array.isArray(contract?.pools)) return [];
+  return contract.pools.filter((p) => p?.id && Array.isArray(p.windows)).map((p) => {
+    const provider = String(p.provider ?? p.id);
+    const name = provider === "antigravity" ? `Antigravity · ${p.name ?? p.id.split("/").slice(1).join("/")}`
+      : PROVIDER_NAMES[provider] ?? p.name ?? p.id;
+    return {
+      id: p.id, provider, name, account: p.account ?? null, plan: p.plan ?? null,
+      models: Array.isArray(p.models) ? p.models : null,
+      readAt: Number.isFinite(p.readAt) ? p.readAt : null, ttl: Number.isFinite(p.ttlMs) ? p.ttlMs : null,
+      windows: p.windows.filter((w) => Number.isFinite(w?.leftPct)).map((w) => {
+        const base = window(w.label, w.leftPct, w.resetsAt, KINDS.has(w.kind) ? w.kind : w.label);
+        return Number.isFinite(w.lengthMs) ? { ...base, lengthMs: w.lengthMs } : base;
+      }),
+    };
+  });
+}
+
+/** "usage-monitor.consumers" with this mod checked in now (`wanted`) or taken out. */
+export function checkIn(consumers, id, wanted, now = Date.now()) {
+  const next = { ...(consumers && typeof consumers === "object" ? consumers : {}) };
+  if (wanted) next[id] = now;
+  else delete next[id];
+  return next;
 }
 
 /**

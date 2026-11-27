@@ -10,9 +10,10 @@
 
 import * as fs from "fs/promises";
 import { createHash } from "crypto";
-import { appHome, exec, home, readTextFile, writeTextFile } from "herdr";
+import { appHome, exec, home, readTextFile, setShared, shared, writeTextFile } from "herdr";
 import { mergeCatalog } from "./catalog.js";
 import { readJob } from "./queue.js";
+import { checkIn, CONSUMERS_KEY, contractUsable, poolsFromContract, poolsFromReport, WINDOWS_KEY } from "./rule.js";
 import { day } from "./time.js";
 
 export const STATE_VERSION = 1;
@@ -152,7 +153,29 @@ export async function loadCatalog() {
 /** "~/x" → "/Users/me/x". */
 export const expandHome = (path) => (path === "~" || path?.startsWith("~/") ? home() + path.slice(1) : path);
 
-// --- Readings: Usage Monitor's bridge, cached (the contract fallback in DESIGN.md) ---
+// --- Readings: Usage Monitor's published readings, else its bridge ---
+
+const CONSUMER_ID = "usage-queue";
+
+/**
+ * The pools to judge: Usage Monitor's published readings, else its bridge's. Throws when there
+ * are none to be had.
+ *
+ * `fresh`: the queue needs current readings (a job waits on Auto). It then checks in with Usage
+ * Monitor as a consumer, so Usage Monitor keeps reading while its readout is hidden. Without
+ * published readings (an older Usage Monitor, or none of its views open), it asks the bridge,
+ * which refreshes only what's due.
+ */
+export async function readPools(fresh = false) {
+  try {
+    const consumers = shared(CONSUMERS_KEY);
+    if (fresh || consumers?.[CONSUMER_ID]) setShared(CONSUMERS_KEY, checkIn(consumers, CONSUMER_ID, fresh));
+  } catch {}
+  let contract = null;
+  try { contract = shared(WINDOWS_KEY); } catch {}
+  if (contractUsable(contract)) return poolsFromContract(contract);
+  return poolsFromReport(await readReport(fresh));
+}
 
 let bun = null;
 
@@ -160,7 +183,7 @@ let bun = null;
  * Usage Monitor's latest report, or throws. Cached only, unless `refresh`: then the bridge asks
  * any provider that's due under Usage Monitor's adaptive schedule (it never asks sooner).
  */
-export async function readReport(refresh = false) {
+async function readReport(refresh = false) {
   const bridge = `${appHome()}/mods/usage-monitor/bridge.js`;
   if (!(await fs.exists(bridge))) throw new Error("Usage Monitor isn't installed: the queue reads allowance from it.");
   let configured = null;
