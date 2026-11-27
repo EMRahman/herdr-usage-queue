@@ -1320,7 +1320,9 @@ export default class UsageQueue extends View {
         this.draftSeq++;
         await saveDraft(null);
         await reloadJobs();
+        // Second step: the job's dialog opens on its launch options.
         closeOverlay(p.overlay);
+        this.openJob(id);
       } catch (e) {
         this.error = String(e?.message ?? e);
         cx.notify();
