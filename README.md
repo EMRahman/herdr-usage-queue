@@ -8,7 +8,7 @@ Claude Code · Codex · Antigravity
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
-![Usage Queue in the Herdr sidebar: three jobs ready to launch, one scheduled to launch by itself in 2h 10m, a traffic light per coding agent, and Fix flaky tests with its recommended model and effort](herdr-app/preview.png)
+![Usage Queue with five approved jobs, including Enable CI waiting for Fix flaky tests and Ship API docs waiting for Write API docs. Fix flaky tests is selected, with its recommended model and effort.](herdr-app/preview.png)
 
 Subscriptions reset their allowance on a clock, and whatever is left when a window resets is
 gone. Usage Queue holds jobs you'd like done, has a big model recommend the model and effort for
