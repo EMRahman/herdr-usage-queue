@@ -13,11 +13,12 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import {
   agents, checking, closeOverlay, exec, focused, knownAgents, notify, openOverlay, panes, pickFolder, props, run,
-  setShared, shared, spaces, theme, watchFolder,
+  setShared, shared, spaces, terminals, theme, watchFolder,
 } from "herdr";
 import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
+import { cleanUpMerged, cleanupEntry } from "./cleanup.js";
 import { SIZES, SIZE_TEXT } from "./estimate.js";
-import { fetchPR, findPR, mergePR, myLogin, prState } from "./github.js";
+import { fetchPR, findPR, mergePR, myLogin, prHead, prState } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
@@ -26,7 +27,7 @@ import {
 } from "./queue.js";
 import { judgeAll, poolsFromReport } from "./rule.js";
 import {
-  deleteJob, ensureFolders, loadCatalog, loadDraft, loadJobs, loadState, paths, readReport, record, saveDraft,
+  deleteJob, ensureFolders, expandHome, loadCatalog, loadDraft, loadJobs, loadState, paths, readReport, record, saveDraft,
   updateState, writeNewJob,
 } from "./store.js";
 import { ago, duration } from "./time.js";
@@ -304,11 +305,13 @@ async function watchPRs() {
       if (step.action === "merged" || step.action === "closed") {
         await patchWatch(id, { phase: step.action, changedAt: now });
         await record({ type: `pr-${step.action}`, job: id, number: w.number });
+        if (step.action === "merged") await queueCleanup(job, launched, w.number);
       } else if (step.action === "merge") {
         try {
           const how = await mergePR(launched.folder, w.number);
           await patchWatch(id, { phase: "merged", changedAt: now });
           await record({ type: "pr-merged", job: id, number: w.number, how, by: "queue" });
+          await queueCleanup(job, launched, w.number);
           notify({ title: `Merged PR #${w.number}: ${job.title}`, body: `It got a 👍 (${how}).`, level: "info" });
         } catch (e) {
           await patchWatch(id, { phase: "needs-you", error: String(e?.message ?? e), changedAt: now });
@@ -362,10 +365,138 @@ async function lateCheck(job, launched, w, now) {
     await patchWatch(job.id, { phase, changedAt: now, error: undefined, sendFailed: undefined });
     await record({ type: `pr-${phase}`, job: job.id, number: w.number, late: true });
     if (phase === "merged") {
+      await queueCleanup(job, launched, w.number);
       const waiting = data.jobs.filter((j) => waitFor(j, data.state) === job.id && !currentVersion(j, jobState(j.id).launched));
       if (waiting.length) notify({ title: `PR #${w.number} merged: ${job.title}`, body: `${waiting.map((j) => j.title).join(", ")} can launch now.`, level: "info" });
     }
   } catch {}
+}
+
+// --- After a merge: the job's worktree and branches (see cleanup.js) ---
+
+/** A merged job's leftovers are retried this often while they have to wait. */
+const CLEANUP_RETRY_MS = 2 * 60_000;
+/** After this long, a cleanup that still has to wait is given up (and you're told). */
+const CLEANUP_FOR_MS = 7 * 24 * 3_600_000;
+const CLOSING = "Closing its space first.";
+const cleanupTriedAt = new Map();
+/** Terminals of spaces closed for a cleanup, by worktree folder: it waits until they stop. */
+const closingTerminals = new Map();
+let cleaning = false;
+
+/** Queues a merged job's worktree and branches for removal. They're kept in state apart from
+ *  the job, so deleting the job doesn't leave them behind. */
+async function queueCleanup(job, launched, number) {
+  if (!launched?.branch || !number || launched.cleanupQueued) return;
+  try {
+    data.state = await updateState((s) => {
+      s.cleanups ??= {};
+      s.cleanups[launched.branch] ??= cleanupEntry(job, launched, number);
+      if (s.jobs[job.id]?.launched) s.jobs[job.id].launched.cleanupQueued = true;
+    });
+    changed();
+  } catch {
+    // Not queued: runCleanups queues merged jobs it finds without one.
+  }
+}
+
+const within = (folder) => (cwd) => !!cwd && (cwd === folder || cwd.startsWith(`${folder}/`));
+
+/** What's open in a worktree: { busy } says why it can't be closed now ("" if it can), and
+ *  `spaces` are the job's own spaces there, safe to close. */
+function folderUse(folder) {
+  const inIt = within(folder);
+  const all = panes();
+  const cwdOf = new Map(all.map((p) => [p.pane, p.cwd]));
+  const result = (busy, own = []) => ({ busy, spaces: own });
+  if (agents().some((a) => inIt(cwdOf.get(a.pane)) && (a.status === "working" || a.status === "blocked"))) {
+    return result("Its agent is still working.");
+  }
+  const stopping = closingTerminals.get(folder);
+  if (stopping && terminals().some((t) => t.state === "live" && stopping.has(t.address))) {
+    return result("Its terminals haven't stopped yet.");
+  }
+  const own = [];
+  for (const sp of spaces()) {
+    const tabs = new Set((sp.tabs ?? []).map((tab) => tab.id));
+    const mine = all.filter((p) => tabs.has(p.tab) && p.terminal);
+    if (!inIt(sp.folder) && !mine.some((p) => inIt(p.cwd))) continue;
+    // Only the job's own space is closed: one you opened elsewhere waits for you.
+    if (!inIt(sp.folder)) return result(`A terminal in the ${sp.name} space is in it.`);
+    if (mine.some((p) => !inIt(p.cwd))) return result(`The ${sp.name} space has terminals outside it.`);
+    if (sp.active) return result("Its space is on screen.");
+    own.push(sp);
+  }
+  return result("", own);
+}
+
+/** cleanUpMerged's freeFolder: closes the job's space, then waits for its terminals to stop. */
+async function closeFolder(folder) {
+  const use = folderUse(folder);
+  if (use.busy || !use.spaces.length) return use.busy;
+  const tabs = new Set(use.spaces.flatMap((sp) => (sp.tabs ?? []).map((tab) => tab.id)));
+  closingTerminals.set(folder, new Set(panes().filter((p) => p.terminal && tabs.has(p.tab)).map((p) => p.terminal)));
+  for (const sp of use.spaces) run("space.close", { id: sp.id, confirmed: true });
+  return CLOSING;
+}
+
+async function gitIn(cwd, args, timeout = 30_000) {
+  const r = await exec("git", args, { cwd, timeout });
+  return { ok: r.code === 0, out: r.stdout.trim(), err: r.stderr.trim() };
+}
+
+/** Removes merged jobs' worktrees and branches when nothing would be lost (see cleanup.js). */
+async function runCleanups() {
+  if (cleaning) return;
+  cleaning = true;
+  try {
+    // Merged before cleanups were queued: queue them now.
+    for (const job of data.jobs) {
+      const launched = jobState(job.id).launched;
+      if (launched?.pr?.phase === "merged" && !launched.cleanupQueued) await queueCleanup(job, launched, launched.pr.number);
+    }
+    for (const entry of Object.values(data.state.cleanups ?? {})) {
+      const now = Date.now();
+      if (now - (cleanupTriedAt.get(entry.branch) ?? 0) < CLEANUP_RETRY_MS) continue;
+      const late = now - entry.at > CLEANUP_FOR_MS;
+      // While its agent works or its space is on screen, wait without asking GitHub.
+      const busy = folderUse(entry.folder).busy;
+      if (busy && !late) continue;
+      cleanupTriedAt.set(entry.branch, now);
+      let result;
+      try {
+        if (late) {
+          result = { status: "kept", reason: `Gave up after a week of waiting${busy ? `: ${busy}` : "."}`, removed: [] };
+        } else {
+          const repo = expandHome(entry.repo);
+          const head = await prHead(repo, entry.number);
+          result = head.state && head.state !== "MERGED"
+            ? { status: "kept", reason: `PR #${entry.number} is ${head.state.toLowerCase()} now.`, removed: [] }
+            // The folder as launched, which its space and terminals use (git may resolve links).
+            : await cleanUpMerged({
+              git: gitIn, repo, branch: entry.branch, number: entry.number, headOid: head.headRefOid,
+              freeFolder: () => closeFolder(entry.folder),
+            });
+        }
+      } catch (e) {
+        result = { status: "wait", reason: String(e?.message ?? e), removed: [] };
+      }
+      if (result.status === "wait") {
+        // A space it just closed: look again on the next pass rather than in two minutes.
+        if (result.reason === CLOSING) cleanupTriedAt.delete(entry.branch);
+        continue;
+      }
+      closingTerminals.delete(entry.folder);
+      data.state = await updateState((s) => { delete s.cleanups?.[entry.branch]; });
+      await record({ type: "cleanup", job: entry.job, branch: entry.branch, number: entry.number, ...result });
+      if (result.status === "kept") {
+        notify({ title: `Kept ${entry.branch}`, body: `${entry.title}: ${result.reason}`, level: "warning" });
+      }
+      changed();
+    }
+  } finally {
+    cleaning = false;
+  }
 }
 
 /** Marks a launched job finished by hand (or takes that back), so jobs waiting on it can launch.
@@ -610,7 +741,11 @@ export default class UsageQueue extends View {
       await launchScheduled();
     }));
     // Launched jobs' PRs: each is checked on GitHub every 2 minutes (see watchPRs).
-    cx.timer.every(30_000, (cx) => cx.spawn(async () => watchPRs()));
+    // Then merged jobs' worktrees and branches go (see runCleanups).
+    cx.timer.every(30_000, (cx) => cx.spawn(async () => {
+      await watchPRs();
+      await runCleanups();
+    }));
     // Dialogs hand their work here so that closing them doesn't cancel it.
     cx.timer.every(1000, (cx) => {
       while (queue.length) {

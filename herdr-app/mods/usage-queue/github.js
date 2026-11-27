@@ -46,6 +46,11 @@ export async function prState(cwd, number) {
   return (await json(cwd, ["pr", "view", String(number), "--json", "state"]))?.state ?? "OPEN";
 }
 
+/** The PR's state and head commit: { state, headRefOid }. */
+export async function prHead(cwd, number) {
+  return (await json(cwd, ["pr", "view", String(number), "--json", "state,headRefOid"])) ?? {};
+}
+
 /** Merges the PR the way the repo allows: squash, else a merge commit, else rebase. */
 export async function mergePR(cwd, number) {
   const repo = await json(cwd, ["repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"]);
