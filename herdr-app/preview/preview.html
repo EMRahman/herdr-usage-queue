@@ -29,12 +29,7 @@
   .head { height: 60px; padding: 0 22px 0 24px; display: flex; align-items: center; gap: 10px;
     border-bottom: 1px solid #2c332f; }
   .title { font-weight: 700; font-size: 24px; letter-spacing: -0.01em; flex: 1; }
-  .tab { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 8px;
-    color: #9ca59f; font-size: 16px; font-weight: 600; }
-  .tab.on { background: #26302b; color: #f1efe9; }
-  .tab svg { width: 17px; height: 17px; }
   .plus { color: #9ca59f; font-size: 26px; font-weight: 400; margin-left: 4px; }
-  .sub { padding: 14px 24px 0; color: #7f8a84; font-size: 15px; }
   .lights { display: flex; gap: 18px; padding: 10px 24px 10px; color: #b9c0bb; font-size: 16px; }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 10px; margin-right: 7px; }
   .g { background: #2fbf71; } .y { background: #d4a72c; } .r { background: #e5534b; }
@@ -46,6 +41,7 @@
   .row .dot { flex: none; margin-right: 2px; }
   .row .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row .after { color: #9ca59f; font-size: 14px; font-weight: 500; }
+  .marker { color: #9ca59f; font-size: 15px; font-weight: 500; }
   .btn { flex: none; white-space: nowrap; height: 30px; padding: 0 11px; display: flex; align-items: center; border-radius: 7px; background: #26302b;
     font-size: 15px; font-weight: 600; color: #f1efe9; }
   .btn.dim { color: #6d7771; }
@@ -56,8 +52,7 @@
   .box { margin: 22px 22px 0; border: 1px solid #66756c; border-radius: 12px; padding: 18px 20px; background: #1a211e; }
   .rec { font-size: 15px; color: #8d9790; margin-bottom: 10px; }
   .choice { font-size: 21px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-  .size { font-size: 15px; color: #7f8a84; font-weight: 500; }
-  .why { font-size: 16px; color: #b9c0bb; margin-top: 10px; line-height: 1.4; }
+  .sizes { display: flex; gap: 7px; margin-bottom: 18px; }
   .state { font-size: 15px; color: #8d9790; margin-top: 12px; }
   .state b { color: #5fd69a; font-weight: 600; }
   .actions { display: flex; gap: 10px; justify-content: flex-end; padding: 22px 22px 0; }
@@ -98,17 +93,14 @@
 <div class="card">
   <div class="pane left">
     <div class="head">
-      <div class="title">Usage Queue</div>
-      <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>1</div>
-      <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>5</div>
+      <div class="title">Launch queue</div>
       <div class="plus">+</div>
     </div>
-    <div class="sub">Approved jobs</div>
     <div class="lights">
       <span><i class="dot g"></i>Claude</span><span><i class="dot y"></i>Codex</span><span><i class="dot r"></i>Antigravity</span>
     </div>
     <ul class="rows">
-      <li class="row hl"><i class="dot g"></i><span class="name">Fix flaky tests</span><span class="btn">Auto</span><span class="btn">Launch</span></li>
+      <li class="row hl"><i class="dot g"></i><span class="name">Fix flaky tests</span><span class="marker">Needs allocation</span></li>
       <li class="row"><i class="dot r"></i><span class="name">Bump packages</span><span class="btn auto">Auto in 2h 10m</span></li>
       <li class="row"><i class="dot y"></i><span class="name">Write API docs</span><span class="btn">Auto</span><span class="btn">Launch</span></li>
     </ul>
@@ -121,12 +113,12 @@
   <div class="pane right">
     <div class="head rhead"><div class="title">Fix flaky tests</div><div class="route">~/Code/webapp</div></div>
     <div class="box">
-      <div class="rec">Estimated by Codex · GPT-6.2 Astra</div>
-      <div class="choice"><i class="dot g"></i>Claude · Sonnet · high <span class="size">size m</span></div>
-      <div class="why">Tests that fail only sometimes take a few runs to pin down: a mid-tier model at high effort is enough.</div>
+      <div class="rec">Size</div>
+      <div class="sizes"><span class="btn">Small</span><span class="btn auto">Medium</span><span class="btn">Large</span><span class="btn">Estimate with a model</span></div>
+      <div class="choice"><i class="dot g"></i>Claude · Sonnet · medium</div>
       <div class="state"><b>Ready:</b> ≈32 points of 7d weekly reset unused in 1d 4h</div>
     </div>
-    <div class="actions"><span class="btn">Unapprove</span><span class="btn">Auto</span><span class="btn primary">Launch</span></div>
+    <div class="actions"><span class="btn">Save allocation</span><span class="btn">Auto</span><span class="btn primary">Launch</span></div>
   </div>
 </div>
 

@@ -8,11 +8,11 @@ Claude Code · Codex · Antigravity
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
-![Usage Queue with five approved jobs, including Enable CI waiting for Fix flaky tests and Ship API docs waiting for Write API docs. Fix flaky tests is selected, with its recommended model and effort.](herdr-app/preview.png)
+![Launch queue with jobs ready to start, a job that needs allocation and jobs waiting on dependencies. The selected job shows manual size options.](herdr-app/preview.png)
 
 Subscriptions reset their allowance on a clock, and whatever is left when a window resets is
-gone. Usage Queue holds jobs you'd like done, has a big model recommend the model and effort for
-each, and launches them when you say so, or by themselves once there's allowance. It reads
+gone. Usage Queue holds jobs you'd like done and launches them on demand or automatically when
+there's allowance. You can set each job's size, model and effort by hand or request an estimate. It reads
 allowance from [Usage Monitor](https://github.com/EMRahman/herdr-usage-monitor), which must be
 installed.
 
@@ -20,38 +20,37 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
 
 ## The flow
 
-1. **Add a job**: click **+** in the queue (title, prompt, repository, agents, priority), or
-   write a JSON file into `~/.config/herdr-app/usage-queue/jobs/`.
-2. **Estimate** (you approve it): open the job from **Pending Launch Approval**. Pick one of the
-   big models that has allowance (one is suggested) and click **Estimate**. It reads the job,
-   read-only, and recommends a model, thinking effort and size for each of the job's agents.
-3. **Approve**: approve the proposal as is, or change the agent, model or effort first. The job
-   moves to **Ready to Launch**.
-4. **Launch**: click **Launch**, or **Auto** to launch as soon as there's allowance (with
+1. **Add a job** with **+**, or write a JSON file into `~/.config/herdr-app/usage-queue/jobs/`.
+   The job appears in **Launch queue** with a **Needs allocation** marker.
+2. **Set the size** in the job dialog. Choose **Small**, **Medium** or **Large**, and check the
+   agent, model and effort. **Estimate with a model** can suggest those settings using
+   subscription allowance. **Save allocation** keeps your choices for later. Size records the
+   expected work and the allowance light determines when a job can start.
+3. **Launch** from the dialog or the queue. Choose **Auto** to launch as soon as there's allowance (with
    allowance now, Auto is the same as Launch). The queue fetches the repo and makes a new worktree
    on a `queue/<job>-<time>` branch from the remote's latest default branch (`origin/main`), then
    starts the agent there in a background space with the prompt as its first message.
 
-5. **PR and reviews** (optional, set per job under "When it's done"): **Open a PR** has the agent
+4. **PR and reviews** (optional, set per job under "When it's done"): **Open a PR** has the agent
    open a pull request when it's done. The queue then checks it on GitHub every 2 minutes and
    sends new review comments back to the agent, up to 3 rounds, each ending in
    `@codex review`. **PR + merge on 👍** also merges it once it gets a 👍 (a 👍 reaction, an
    approving review, or Codex's "Didn't find any major issues"). New comments after the third
    round, or a failed merge, are handed to you with a notification.
 
-6. **Wait for another job** (optional, under "Wait for" when you add the job, or in its dialog
-   before or after approval): the job won't
+5. **Wait for another job** (optional, under "Wait for" when you add the job or open its dialog).
+   The job won't
    launch, by Launch or Auto, until that job is finished: its PR merged, or, without a PR, its
    agent done. Launches fetch the remote's latest first, so the work goes on top of what was
    just merged. With Auto on, it launches by itself once both the job it waits for is finished
-   and there's allowance. The sidebar groups blocked jobs under **Waiting for another job**
-   in their current tab, with "… · after <job>" on each row. A PR the queue stopped working on
+   and there's allowance. The sidebar groups blocked jobs under **Waiting for another job**,
+   with "… · after <job>" on each row. A PR the queue stopped working on
    (it needs you, or nothing happened for a day) is still checked every 10 minutes for two
    weeks, so merging it yourself starts the jobs waiting on it. To let them go without a merge,
    click **Mark finished** in the launched job's dialog, or **Mark <job> finished** in the
    waiting job's.
 
-Editing a job file after approval sends it back to Pending Launch Approval.
+Editing a job file resets its allocation and Auto setting. Its queue row shows **Needs allocation**.
 
 ## The lights
 
@@ -91,7 +90,8 @@ To remove it, delete the `usage-queue` block from the layout file and the mod fo
 }
 ```
 
-`model` and `effort` are optional: with both set for an agent, the estimate is skipped.
+`model` and `effort` are optional. Set both to prefill the allocation for an agent.
+`"launch": "auto"` enables Auto when you click **Save allocation**.
 `"after"` is the id (file name) of a job to wait for. `"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
 it on a 👍); it needs the GitHub CLI (`gh`) signed in.
 

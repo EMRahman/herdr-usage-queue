@@ -3,7 +3,7 @@
 import { agentOf, modelOf } from "./catalog.js";
 
 export const SIZES = ["s", "m", "l"];
-const SIZE_TEXT = { s: "under 15 minutes of agent work", m: "15 to 60 minutes", l: "over an hour" };
+export const SIZE_TEXT = { s: "under 15 minutes of agent work", m: "15 to 60 minutes", l: "over an hour" };
 
 /**
  * The estimator's prompt.

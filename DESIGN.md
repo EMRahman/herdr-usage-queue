@@ -4,8 +4,8 @@ Status: draft, revised 2026-11-27. Milestones 1 and 2 are built (`herdr-app/mods
 
 **Usage Queue** is a Herdr app mod that holds a queue of agent jobs. When one of your
 subscriptions has allowance that would otherwise reset unused, it proposes a job for it, with a
-recommended model and thinking effort. You approve or adjust the proposal; approved jobs launch
-when you click Launch, or by themselves when allowance frees up if set to auto-launch. It is a
+recommended model and thinking effort. You choose the allocation and click Launch, or enable
+Auto to launch when allowance frees up. It is a
 companion to
 [Usage Monitor](https://github.com/EMRahman/herdr-usage-monitor): the monitor shows the
 allowance, and the queue spends it.
@@ -55,12 +55,10 @@ allowance, and none routes a job across providers.
 4. **Even pace (v1), learned pace later.** v1 assumes you would use your whole allowance, so it
    only spends when you are clearly behind. Learning your real pattern is what later makes it
    spend more.
-5. **Approval and launch are separate steps** ([Flow](#flow)). You approve a proposal once; it
-   then waits in Ready to Launch until you launch it, or launches by itself if set to
-   auto-launch. A global "auto" setting comes later.
-6. **A big model recommends model and effort per job**, only when you approve running the
-   estimate, and you approve or adjust what it recommends. A good recommendation saves more
-   allowance than the estimate costs. No token predictions.
+5. **One launch queue** ([Flow](#flow)). Each job appears there as soon as it is added.
+   **Needs allocation** marks jobs that still need a launch configuration.
+6. **Manual sizing by default.** A big model can recommend size, model and effort on request.
+   A good recommendation saves more allowance than the estimate costs. No token predictions.
 7. **The reserve is enforced while jobs run, not only at dispatch** ([Brake](#5-brake)).
 8. **Interactive agents in Herdr panes, not headless runs.** You can watch, take over, and answer
    a permission prompt.
@@ -77,24 +75,20 @@ Each job goes through these steps:
 
 1. **Find allowance.** The [dispatch rule](#dispatch-rule) finds which pools are open and worth
    running, and which of the job's agents can draw on them.
-2. **Estimate model and effort (you approve it).** An estimate spends allowance too, so it only
-   runs when you approve it. The job lists the big models that could run the estimate, each with
-   its pool's readiness (Ready, Open, Not yet), and suggests one. You pick one and click
-   **Estimate**. The big model recommends a model, a thinking effort and a size for each route
-   the job allows, with routes that have allowance now listed first
-   ([Estimating](#estimating-model-and-effort)). Together with the chosen route, that is the
-   job's **proposal**.
-3. **Approve.** The job sits in **Pending Launch Approval** until you approve the proposal as it
-   is or after adjusting it. Approving moves it to **Ready to Launch**.
-4. **Launch.** Each job in Ready to Launch shows whether its quota allows a launch now:
+2. **Set the allocation.** Open a **Needs allocation** row to choose Small, Medium or Large
+   and set the agent, model and effort. **Estimate with a model** offers a recommendation
+   on request ([Estimating](#estimating-model-and-effort)).
+3. **Launch.** **Launch** or **Auto** saves the chosen allocation and starts or schedules the
+   job. **Save allocation** keeps the choices for later. Each queue row shows whether its
+   allowance permits a launch:
    - **Ready** (green): its pool is worth running; this allowance would otherwise reset unused.
    - **Open** (yellow): its pool is above the reserve but nothing is going to waste; launching
      spends allowance you might want later.
    - **Not yet** (red): its pool is closed, with the reason and when that changes ("weekly 4%
      left until 03:00").
 
-   The job stays there until you click **Launch**. If it is set to **auto-launch**, it launches
-   by itself the moment it becomes Ready.
+   The job stays in the queue until it launches. With **Auto** enabled, it launches when there
+   is allowance and any prerequisite job is finished.
 
 Later, a setting makes approval automatic, per job or for the whole queue: the queue then
 estimates, proposes and launches without asking.
@@ -225,8 +219,8 @@ backlog size, and you decide.
 
 ## Estimating model and effort
 
-- **Only when you approve it.** Nothing runs an estimate by itself. The result stays on the job
-  until you edit the prompt or estimate again. A job that pins `model`/`effort` skips it.
+- **On request.** The result stays on the job until you edit the file or estimate again.
+  A job that pins `model` and `effort` opens with those values selected.
 - **Big models only**, because picking the right model and effort takes judgement about the task
   and the repo. Estimators are a configured list of each provider's top model at high effort
   (e.g. Opus for Claude). Those on a closed pool are listed but can't be picked.
@@ -269,10 +263,9 @@ mod's own state.
 ```
 
 A job that runs once leaves the queue when it ends. A repeating job is re-queued no earlier than
-its `repeat` period after its last run, and still waits for allowance. It keeps its approved
-proposal, so it goes straight back to Ready to Launch without being approved again.
-`"launch": "auto"` in the file sets auto-launch for the job once it is approved. The estimate
-and the approved proposal are state, not part of the file.
+its `repeat` period after its last run, and still waits for allowance. It keeps its saved allocation.
+`"launch": "auto"` in the file enables Auto on **Save allocation**. The estimate and
+allocation live in state.
 
 ## Running a job
 
@@ -310,8 +303,8 @@ a file in its folder changes, and inside the app home, where mods may write file
 
 - **One writer.** Only the mod writes state and history. `state.json` is written to a temp file
   and renamed, so a crash can't leave it half-written.
-- **Approval is tied to what you saw.** The approval stores a hash of the job file. If the file
-  changes afterwards, the job goes back to Pending Launch Approval.
+- **Allocation applies to one version of a job.** The allocation stores a hash of the job file.
+  If the file changes, the queue shows **Needs allocation** and Auto requires a new allocation.
 - **Ready to move to a database.** All reads and writes go through one small storage module, so
   swapping files for a database changes only that module. Every record carries a `version` and
   a stable job id, and every event has a timestamp. Moving to a database is then a one-off
@@ -360,23 +353,13 @@ shared("usage-monitor.windows") = {
 
 ## UI
 
-Panels in the left sidebar, beside Files and Changes, like Usage Monitor's. Two icons, one per
-panel:
-
-- **Pending Launch Approval** (badge: how many wait for you): jobs not yet approved, by
-  priority. Each shows its proposal (route, model, effort, size, why). A job without one shows
-  the big models available to run the estimate, with each one's light and one suggested, and an
-  **Estimate** button. You can adjust the route, model and effort, then **Approve**, with an
-  **auto-launch** checkbox.
-- **Ready to Launch** (badge: how many are green): approved jobs, by priority. Each shows its
-  approved route, model and effort, its light with the reason and when that changes, a
-  **Launch** button, and its auto-launch toggle. Jobs stay here until launched. Below them,
-  **Running and recent**: click to jump to the terminal or peek; failures and stops say why.
-
-Both panels share a header:
+**Launch queue** is a single sidebar list. Jobs appear by priority, with dependent jobs grouped
+under **Waiting for another job**. A row shows **Needs allocation** or launch controls for its
+saved allocation. The job dialog shows manual size choices and an optional estimate.
+**Launched** appears below the queue with recent launches and PR statuses.
 
 - **A traffic light per coding agent** (Claude, Codex, Antigravity, …):
-  - **Green (Ready)**: allowance would reset unused. Auto-launch fires only on green.
+  - **Green (Ready)**: allowance would reset unused.
   - **Yellow (Open)**: above the reserve, but nothing is going to waste. Launching spends
     allowance you might want later.
   - **Red (Not yet)**: at or below the reserve.
@@ -387,7 +370,7 @@ Both panels share a header:
   prompt that has an agent write a job file with you.
 - **Pause** switch.
 
-A small status-bar item: `1 to approve · 2 ready · 1 running`.
+A possible status-bar item is `1 needs allocation · 2 ready · 1 running`.
 
 ## Safety
 
@@ -423,8 +406,8 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 
 1. **Find allowance** (built): pure `rule.js` with tests from real readings, and a traffic light
    per coding agent. Readings through the bridge fallback.
-2. **Estimate, approve, launch** (built): Pending Launch Approval and Ready to Launch with
-   readiness, the estimate step, the add-job form, and manual Launch into a worktree in a
+2. **Allocate and launch** (built): one Launch queue with readiness, manual sizing and optional
+   estimates, the add-job form, and manual Launch into a worktree in a
    background space. You watch it; no brake or done detection yet. History JSONL is written.
 3. **Contract**: Usage Monitor publishes `usage-monitor.windows` (+ consumers keepalive), so
    readings keep coming while its readout is hidden.
