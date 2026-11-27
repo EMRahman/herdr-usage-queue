@@ -42,8 +42,8 @@
   .row { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 10px; border-radius: 10px;
     font-size: 20px; font-weight: 600; }
   .row.hl { background: #1f2824; }
-  .row .name { flex: 1; white-space: nowrap; }
-  .btn { height: 30px; padding: 0 11px; display: flex; align-items: center; border-radius: 7px; background: #26302b;
+  .row .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn { flex: none; white-space: nowrap; height: 30px; padding: 0 11px; display: flex; align-items: center; border-radius: 7px; background: #26302b;
     font-size: 15px; font-weight: 600; color: #f1efe9; }
   .btn.dim { color: #6d7771; }
   .btn.auto { background: #1d3328; color: #5fd69a; border: 1px solid #2fbf71; }
@@ -105,17 +105,17 @@
       <span><i class="dot g"></i>Claude</span><span><i class="dot y"></i>Codex</span><span><i class="dot r"></i>Antigravity</span>
     </div>
     <div class="rows">
-      <div class="row hl"><i class="dot g"></i><span class="name">EU map</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
-      <div class="row"><i class="dot r"></i><span class="name">Flaky test hunt</span><span class="btn auto" id="auto">Auto in 2h 10m</span></div>
-      <div class="row"><i class="dot y"></i><span class="name">Docs refresh</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
+      <div class="row hl"><i class="dot g"></i><span class="name">Fix flaky tests</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
+      <div class="row"><i class="dot r"></i><span class="name">Bump packages</span><span class="btn auto" id="auto">Auto in 2h 10m</span></div>
+      <div class="row"><i class="dot y"></i><span class="name">Write API docs</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
     </div>
   </div>
   <div class="pane right">
-    <div class="head rhead"><div class="title">EU map</div><div class="route">~/Code/Games</div></div>
+    <div class="head rhead"><div class="title">Fix flaky tests</div><div class="route">~/Code/webapp</div></div>
     <div class="box">
       <div class="rec">Estimated by Codex · GPT-6.2 Astra</div>
-      <div class="choice"><i class="dot g"></i>Claude · Sonnet · medium <span class="size">size m</span></div>
-      <div class="why">A mid-tier model at medium effort is enough to add a European board to iron_routes.html.</div>
+      <div class="choice"><i class="dot g"></i>Claude · Sonnet · high <span class="size">size m</span></div>
+      <div class="why">Tests that fail only sometimes take a few runs to pin down: a mid-tier model at high effort is enough.</div>
       <div class="state"><b>Ready:</b> ≈32 points of 7d weekly reset unused in 1d 4h</div>
     </div>
     <div class="actions"><span class="btn">Unapprove</span><span class="btn">Auto</span><span class="btn primary">Launch</span></div>
