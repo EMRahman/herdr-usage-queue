@@ -29,6 +29,7 @@ export function readJob(id, text) {
       launch: raw.launch === "auto" ? "auto" : "approve",
       base: baseOf(raw),
       pr: prModeOf(raw),
+      after: typeof raw.after === "string" && raw.after.trim() ? raw.after.trim() : null,
       raw,
     },
   };
@@ -133,13 +134,55 @@ export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(
   const due = [];
   for (const job of classify(jobs, state).ready) {
     const approval = state.jobs?.[job.id]?.approval;
-    if (!approval?.auto) continue;
+    if (!approval?.auto || blockedBy(job, jobs, state)) continue;
     const { pool, judgement } = routeStatus(catalog, approval.route, pools, judged);
     if (!pool || judgement.light === "red" || settling.has(pool.id)) continue;
     settling.add(pool.id);
     due.push(job);
   }
   return due;
+}
+
+// --- Waiting for another job ---
+
+/** Whether a launched job is finished: its PR merged, or (without a PR) its agent did its work
+ *  and stopped. */
+export function isFinished(entry) {
+  const launched = entry?.launched;
+  if (!launched) return false;
+  if (launched.pr && launched.pr.mode !== "off") return launched.pr.phase === "merged";
+  return Boolean(launched.finishedAt);
+}
+
+/** The job this one waits for (approval's "after", else the job file's), if it isn't finished:
+ *  { job, why }. A job that's gone doesn't hold anything up. */
+export function blockedBy(job, jobs, state) {
+  const after = state.jobs?.[job.id]?.approval?.after ?? job.after;
+  if (!after || after === job.id) return null;
+  const first = jobs.find((j) => j.id === after);
+  if (!first) return null;
+  const entry = state.jobs?.[after];
+  if (isFinished(entry)) return null;
+  const w = entry?.launched?.pr;
+  const why = !entry?.launched ? "isn't launched yet"
+    : w && w.mode !== "off"
+      ? w.phase === "needs-you" || w.phase === "closed" || w.phase === "ended" ? `stopped (${w.phase === "needs-you" ? "it needs you" : w.phase})` : "hasn't had its PR merged yet"
+      : "is still working";
+  return { job: first, why };
+}
+
+/** Jobs this one can wait for: not finished, not itself, and not waiting on it (directly or
+ *  further down), so there's no loop. */
+export function canWaitFor(job, jobs, state) {
+  const after = (id) => state.jobs?.[id]?.approval?.after ?? jobs.find((j) => j.id === id)?.after ?? null;
+  const waitsOn = (id, target, seen = new Set()) => {
+    for (let next = after(id); next && !seen.has(next); next = after(next)) {
+      if (next === target) return true;
+      seen.add(next);
+    }
+    return false;
+  };
+  return jobs.filter((j) => j.id !== job.id && !isFinished(state.jobs?.[j.id]) && !waitsOn(j.id, job.id));
 }
 
 /** A route pinned by the job file itself (model and effort for one agent), or null. */

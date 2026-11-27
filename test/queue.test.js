@@ -172,3 +172,54 @@ describe("estimate", () => {
 test("the default catalog has a big model per agent", () => {
   for (const a of DEFAULT_CATALOG.agents) expect(a.models.some((m) => m.tier === "big")).toBe(true);
 });
+
+describe("waiting for another job", () => {
+  const { blockedBy, canWaitFor, isFinished } = require("../herdr-app/mods/usage-queue/queue.js");
+  const route = { agent: "claude", model: "sonnet", effort: "medium" };
+  const jobs = [
+    { id: "a", hash: "a", priority: 1, createdAt: 1 },
+    { id: "b", hash: "b", priority: 1, createdAt: 2 },
+    { id: "c", hash: "c", priority: 1, createdAt: 3, after: "b" },
+  ];
+  const launched = (pr) => ({ approval: { hash: "x", route }, launched: { at: 1, pr } });
+
+  test("a PR job is finished when its PR is merged; others when their agent stopped", () => {
+    expect(isFinished(launched({ mode: "merge", phase: "in-review" }))).toBe(false);
+    expect(isFinished(launched({ mode: "merge", phase: "merged" }))).toBe(true);
+    expect(isFinished({ launched: { at: 1 } })).toBe(false);
+    expect(isFinished({ launched: { at: 1, finishedAt: 2 } })).toBe(true);
+  });
+
+  test("blocked until the job it waits for is finished", () => {
+    const state = { jobs: {
+      a: launched({ mode: "merge", phase: "in-review" }),
+      b: { approval: { hash: "b", route, after: "a" } },
+    } };
+    expect(blockedBy(jobs[1], jobs, state)).toMatchObject({ job: { id: "a" }, why: "hasn't had its PR merged yet" });
+    state.jobs.a.launched.pr.phase = "merged";
+    expect(blockedBy(jobs[1], jobs, state)).toBe(null);
+  });
+
+  test("the job file's \"after\" counts too, and a deleted job doesn't hold anything up", () => {
+    expect(blockedBy(jobs[2], jobs, { jobs: {} }).why).toBe("isn't launched yet");
+    expect(blockedBy({ id: "z", after: "gone" }, jobs, { jobs: {} })).toBe(null);
+  });
+
+  test("no loops: a job can't wait for one that waits for it", () => {
+    const state = { jobs: { b: { approval: { hash: "b", route, after: "a" } } } };
+    // a can't wait for b (b waits for a) or c (c waits for b, which waits for a); c can wait for either.
+    expect(canWaitFor(jobs[0], jobs, state).map((j) => j.id)).toEqual([]);
+    expect(canWaitFor(jobs[2], jobs, state).map((j) => j.id)).toEqual(["a", "b"]);
+  });
+
+  test("Auto doesn't launch a job that's waiting", () => {
+    const state = { jobs: {
+      a: launched({ mode: "merge", phase: "in-review" }),
+      b: { approval: { hash: "b", auto: true, route, after: "a" } },
+    } };
+    const judged = { claude: { light: "green", waste: 30, headroom: 40, urgency: 5 } };
+    expect(dueToLaunch(jobs.slice(0, 2), state, catalog, pools, judged)).toEqual([]);
+    state.jobs.a.launched.pr.phase = "merged";
+    expect(dueToLaunch(jobs.slice(0, 2), state, catalog, pools, judged).map((j) => j.id)).toEqual(["b"]);
+  });
+});

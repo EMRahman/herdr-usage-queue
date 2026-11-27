@@ -107,6 +107,11 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   in the worktree if the old one is gone. New feedback after round 3, a failed merge, or a day
   with nothing happening ends the watch, with a notification. Launched rows show "PR #12 ·
   round 1/3", "Merged #12", "👍 #12" or "Needs you #12".
+- **Wait for** (`"after"`, or "Wait for" in a Ready job's dialog: Nothing, or any unfinished
+  job that doesn't itself wait on this one): Launch is disabled ("Waiting") and Auto only
+  schedules until that job is finished: its PR merged (a PR approved in review mode stays
+  watched until you merge it), or, without a PR, its agent worked and then went idle or away.
+  The row adds "· after <job>" in `dim`. A deleted job doesn't hold anything up.
 - **Draft**: the add form is kept in memory and in `usage-queue/draft.json` (half a second after
   typing stops, and when it closes), so Esc never loses it.
 - **History**: every event (added, estimated, approved, scheduled, launched, …) is appended to

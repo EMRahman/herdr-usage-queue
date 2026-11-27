@@ -21,7 +21,7 @@ import { fetchPR, findPR, mergePR, myLogin } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage } from "./review.js";
 import {
-  agentLights, classify, dueToLaunch, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
+  agentLights, blockedBy, canWaitFor, classify, dueToLaunch, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
 } from "./queue.js";
 import { judgeAll, poolsFromReport } from "./rule.js";
 import {
@@ -39,7 +39,7 @@ const SETTLE_MS = 10 * 60_000;
 const PR_POLL_MS = 2 * 60_000;
 /** A PR watch with nothing happening for this long stops. */
 const WATCH_FOR_MS = 24 * 3_600_000;
-const PR_DONE = new Set(["merged", "closed", "approved", "needs-you", "ended"]);
+const PR_DONE = new Set(["merged", "closed", "needs-you", "ended"]);
 const PR_MODE_TEXT = { off: "No PR", review: "Open a PR", merge: "PR + merge on 👍" };
 const BUSY_MS = 50_000;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -179,6 +179,8 @@ async function doLaunch({ id, auto = false }) {
   const job = jobById(id);
   const s = jobState(id);
   if (!job || running.launches.has(id) || s.approval?.hash !== job.hash) return;
+  const wait = blockedBy(job, data.jobs, data.state);
+  if (wait) return notify({ title: `${job.title}: waiting`, body: `It waits for ${wait.job.title}, which ${wait.why}.`, level: "warning" });
   const route = s.approval.route;
   const { agent, judgement, pool } = routeStatus(data.catalog, route, data.pools, data.judged);
   if (!agent) return notify({ title: "Can't launch", body: `Unknown agent ${route.agent}.`, level: "error" });
@@ -249,6 +251,7 @@ async function watchPRs() {
   const now = Date.now();
   for (const job of data.jobs) {
     const launched = jobState(job.id).launched;
+    if (launched && !launched.pr) await trackFinish(job.id, launched);
     const w = launched?.pr;
     if (!w || PR_DONE.has(w.phase)) continue;
     const id = job.id;
@@ -293,6 +296,8 @@ async function watchPRs() {
           notify({ title: `Couldn't merge PR #${w.number}`, body: String(e?.message ?? e), level: "error" });
         }
       } else if (step.action === "approved") {
+        // Still watched after this, until you merge it: a job may be waiting on it.
+        if (w.phase === "approved") continue;
         await patchWatch(id, { phase: "approved", changedAt: now });
         await record({ type: "pr-approved", job: id, number: w.number });
         notify({ title: `👍 on PR #${w.number}: ${job.title}`, body: "Ready for you to merge.", level: "info" });
@@ -317,16 +322,40 @@ async function watchPRs() {
   }
 }
 
+/** A launched job without a PR is finished once its agent has worked and stopped (or is gone):
+ *  that's what a job waiting on it waits for. */
+async function trackFinish(id, launched) {
+  if (launched.finishedAt || Date.now() - launched.at > WATCH_FOR_MS) return;
+  const terminal = (launched.terminal && agents().some((a) => a.address === launched.terminal))
+    ? launched.terminal : agentIn(launched.folder);
+  const agent = terminal ? agents().find((a) => a.address === terminal) : null;
+  const changes = {};
+  if (terminal && terminal !== launched.terminal) changes.terminal = terminal;
+  if (agent?.status === "working" && !launched.worked) changes.worked = true;
+  const worked = launched.worked || changes.worked;
+  if (worked && (!agent || agent.status === "idle" || agent.status === "done")) changes.finishedAt = Date.now();
+  if (!Object.keys(changes).length) return;
+  data.state = await updateState((s) => { if (s.jobs[id]?.launched) Object.assign(s.jobs[id].launched, changes); });
+  if (changes.finishedAt) await record({ type: "finished", job: id });
+  changed();
+}
+
 /** A launched job's PR status, for its row: "PR #12 · round 1/3", "Merged", … */
 function prStatus(w) {
   if (!w) return "";
   if (w.phase === "working") return "Working";
   if (w.phase === "merged") return `Merged #${w.number}`;
   if (w.phase === "closed") return `Closed #${w.number}`;
-  if (w.phase === "approved") return `👍 #${w.number}`;
+  if (w.phase === "approved") return `👍 #${w.number} · merge it`;
   if (w.phase === "needs-you") return `Needs you #${w.number}`;
   if (w.phase === "ended") return "Stopped watching";
   return `PR #${w.number}${w.rounds ? ` · round ${w.rounds}/${MAX_ROUNDS}` : ""}`;
+}
+
+async function setAfter(job, after) {
+  data.state = await updateState((s) => { if (s.jobs[job.id]?.approval) s.jobs[job.id].approval.after = after; });
+  await record({ type: "wait-for", job: job.id, after });
+  changed();
 }
 
 async function setPrMode(job, pr) {
@@ -359,7 +388,7 @@ function loadIfNeeded(cx) {
 
 async function approve(job, route, auto, pr = "off") {
   data.state = await updateState((s) => {
-    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr } };
+    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr, after: job.after } };
   });
   await record({ type: "approved", job: job.id, route, auto, pr });
   changed();
@@ -385,7 +414,7 @@ async function setPaused(paused) {
  * as soon as there is. Returns false when the launch runs in this copy (see ask).
  */
 function autoLaunch(job, cx) {
-  if (jobLight(job).light !== "red") return ask({ type: "launch", id: job.id }, cx);
+  if (jobLight(job).light !== "red" && !blockedBy(job, data.jobs, data.state)) return ask({ type: "launch", id: job.id }, cx);
   cx.spawn(async () => setAuto(job, true));
   return true;
 }
@@ -561,20 +590,23 @@ export default class UsageQueue extends View {
     if (kind === "ready") {
       const launching = running.launches.has(job.id);
       const auto = s.approval?.auto;
+      const wait = blockedBy(job, data.jobs, data.state);
       const red = j.light === "red";
+      const waitText = wait ? `Waits for ${wait.job.title}, which ${wait.why}.` : "";
       right = launching
         ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
         : auto
-          ? rowButton(t, `auto-${job.id}`, data.state.paused ? "Paused" : `Auto ${red ? whenOpen(j) : "now"}`.trim(), true,
-            `Launches by itself when there's allowance${data.state.paused ? " (scheduled launches are paused)" : ""}. Now: ${j.reason}\nClick to cancel.`,
+          ? rowButton(t, `auto-${job.id}`, data.state.paused ? "Paused" : wait ? "Auto after" : `Auto ${red ? whenOpen(j) : "now"}`.trim(), true,
+            `Launches by itself ${wait ? `once ${wait.job.title} is finished and ` : "when "}there's allowance${data.state.paused ? " (scheduled launches are paused)" : ""}.${wait ? ` ${waitText}` : ""} Now: ${j.reason}\nClick to cancel.`,
             (cx) => cx.spawn(async () => setAuto(job, false)), true)
           : h_flex().gap(4).flex_none()
-            .child(rowButton(t, `auto-${job.id}`, "Auto", true, red
-              ? `Launch by itself when there's allowance. Now: ${j.reason}`
-              : `There's allowance now, so this launches now, like Launch (${LIGHT_WORD[j.light]}: ${j.reason}).`,
+            .child(rowButton(t, `auto-${job.id}`, "Auto", true, wait
+              ? `Launch by itself once ${wait.job.title} is finished and there's allowance. ${waitText}`
+              : red ? `Launch by itself when there's allowance. Now: ${j.reason}`
+                : `There's allowance now, so this launches now, like Launch (${LIGHT_WORD[j.light]}: ${j.reason}).`,
             (cx) => autoLaunch(job, cx)))
-            .child(rowButton(t, `launch-${job.id}`, "Launch", !red,
-              red ? `Not yet: ${j.reason}` : `Launch now (${LIGHT_WORD[j.light]}): ${j.reason}`,
+            .child(rowButton(t, `launch-${job.id}`, "Launch", !red && !wait,
+              wait ? waitText : red ? `Not yet: ${j.reason}` : `Launch now (${LIGHT_WORD[j.light]}): ${j.reason}`,
               (cx) => ask({ type: "launch", id: job.id }, cx)));
     } else if (kind === "pending") {
       const text = est && !est.failed ? null : s.estimate?.hash === job.hash || pinnedRoute(data.catalog, job) ? "Review" : est?.failed ? "Failed" : "Estimate";
@@ -595,7 +627,9 @@ export default class UsageQueue extends View {
       .on_click(() => (kind === "launched" ? this.openLaunched(job) : this.openJob(job.id)))
       .child(dot(j.light, 7))
       .child(div().flex_1().min_w(0).truncate().text_size(12.5)
-        .text_color(kind === "launched" ? t.muted : t.foreground).child(job.title))
+        .text_color(kind === "launched" ? t.muted : t.foreground).child(job.title)
+        .when(kind === "ready" && Boolean(blockedBy(job, data.jobs, data.state)), (el) => el.child(
+          div().text_color(t.dim).child(` · after ${blockedBy(job, data.jobs, data.state).job.title}`))))
       .child(right);
   }
 
@@ -835,8 +869,10 @@ export default class UsageQueue extends View {
         .child(div().text_size(11.5).text_color(t.dim).child(`size ${route.size ?? "m"}`)));
       body.push(div().pt(4).text_size(12).text_color(t.muted).child(`${LIGHT_WORD[status.light]}: ${status.reason}`));
       if (!launched && s.approval.auto) {
+        const waiting = blockedBy(job, data.jobs, data.state);
         body.push(div().pt(8).text_size(12).text_color(t.accent).child(data.state.paused
           ? "Auto: scheduled launches are paused."
+          : waiting ? `Auto: launches by itself once ${waiting.job.title} is finished and there's allowance.`
           : status.light === "red"
             ? `Auto: launches by itself when there's allowance${whenOpen(status) ? ` (next reset ${whenOpen(status)})` : ""}.`
             : "Auto: launches within a minute."));
@@ -861,6 +897,20 @@ export default class UsageQueue extends View {
     } else {
       if (!pinnedRoute(data.catalog, job)) body.push(...this.estimateSection(t, job));
       if (route) body.push(...this.proposalSection(t, job, route));
+    }
+    // Waiting for another job: it launches only once that one is finished.
+    if (approved && !launched) {
+      const after = s.approval.after ?? null;
+      const wait = blockedBy(job, data.jobs, data.state);
+      const options = canWaitFor(job, data.jobs, data.state);
+      body.push(this.section(t, "Wait for"));
+      body.push(h_flex().gap(6).flex_wrap().items_center()
+        .child(chip(t, "after-none", "Nothing", !after, (_e, cx) => cx.spawn(async () => setAfter(job, null))))
+        .children(options.map((o) => chip(t, `after-${o.id}`, o.title, after === o.id,
+          (_e, cx) => cx.spawn(async () => setAfter(job, o.id)), o.id))));
+      body.push(div().pt(6).text_size(11.5).text_color(wait ? t.accent : t.dim).child(wait
+        ? `Waits for ${wait.job.title}, which ${wait.why}. Then it starts from the remote's latest, so its work goes on top.`
+        : after ? "What it waited for is finished: it can launch." : "Launches on its own terms. Pick a job to launch this one after it's finished (PR merged, or the agent done)."));
     }
     // When it's done: a PR, and its reviews. Chosen before launch.
     if (!launched) {
@@ -892,8 +942,9 @@ export default class UsageQueue extends View {
         footer.child(s.approval.auto
           ? button(t, "auto", "Cancel Auto", "secondary", (_e, cx) => cx.spawn(async () => { await setAuto(job, false); cx.notify(); }))
           : button(t, "auto", "Auto", "secondary", (_e, cx) => { if (autoLaunch(job, cx)) closeOverlay(p.overlay); }, launching));
-        footer.child(button(t, "launch", launching ? "Launching…" : status.light === "red" ? "Not yet" : "Launch", "primary",
-          (_e, cx) => { if (ask({ type: "launch", id: job.id }, cx)) closeOverlay(p.overlay); }, launching || status.light === "red"));
+        const waiting = Boolean(blockedBy(job, data.jobs, data.state));
+        footer.child(button(t, "launch", launching ? "Launching…" : waiting ? "Waiting" : status.light === "red" ? "Not yet" : "Launch", "primary",
+          (_e, cx) => { if (ask({ type: "launch", id: job.id }, cx)) closeOverlay(p.overlay); }, launching || waiting || status.light === "red"));
       }
     } else {
       footer.child(button(t, "approve", "Approve", "primary", (_e, cx) => cx.spawn(async () => {

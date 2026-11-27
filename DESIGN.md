@@ -42,8 +42,8 @@ allowance, and none routes a job across providers.
   Subscription usage in Claude Code, Codex and others does not go through it.
 - **Not a monitor.** Usage Queue does not fetch provider usage itself. It reads Usage Monitor's
   readings ([Data contract](#data-contract-with-usage-monitor)).
-- **Not a workflow engine.** One job is one prompt in one agent session. No DAGs and no
-  dependencies between jobs (perhaps later: `after: <job>`).
+- **Not a workflow engine.** One job is one prompt in one agent session. No DAGs: a job can
+  wait for one other job (`"after"`) to finish, and that's all.
 
 ## Key decisions
 

@@ -39,6 +39,12 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    approving review, or Codex's "Didn't find any major issues"). New comments after the third
    round, or a failed merge, are handed to you with a notification.
 
+6. **Wait for another job** (optional, in a Ready job's dialog under "Wait for"): the job won't
+   launch, by Launch or Auto, until that job is finished: its PR merged, or, without a PR, its
+   agent done. Launches fetch the remote's latest first, so the work goes on top of what was
+   just merged. With Auto on, it launches by itself once both the job it waits for is finished
+   and there's allowance. Its row reads "… · after <job>".
+
 Editing a job file after approval sends it back to Pending Launch Approval.
 
 ## The lights
@@ -80,7 +86,7 @@ To remove it, delete the `usage-queue` block from the layout file and the mod fo
 ```
 
 `model` and `effort` are optional: with both set for an agent, the estimate is skipped.
-`"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
+`"after"` is the id (file name) of a job to wait for. `"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
 it on a 👍); it needs the GitHub CLI (`gh`) signed in.
 
 `"base"` is the commit the job starts from, taken at launch: `"remote"` (default: fetch, then the
