@@ -103,11 +103,13 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   30s, after the PR checks, each is tried (at most every 2 minutes): `gh pr view --json
   state,headRefOid`, then `git fetch <remote> refs/pull/<n>/head` if that commit isn't local.
   The local branch's tip must be in the PR's head (`merge-base --is-ancestor`: a squash merge
-  leaves its commits out of main) and the worktree must have no uncommitted or untracked files,
-  or nothing is removed. Then: close the job's own space (one whose folder is the worktree and
-  whose terminals are all in it), and on the next pass, once its terminals have stopped, `git
-  worktree remove` (no `--force`), `git branch -D`, and `git push <remote> --delete` if GitHub
-  kept the branch and it still points inside the PR. It waits, without asking GitHub, while an
+  leaves its commits out of main) and the worktree must have no uncommitted or untracked files
+  (`--untracked-files=all`, whatever the repo's `status.showUntrackedFiles`), or nothing is
+  removed. Then: close the job's own space (one whose folder is the worktree and whose
+  terminals are all in it), and on the next pass, once its terminals have stopped and the tip
+  is unchanged, `git worktree remove` (no `--force`), `git update-ref -d` with the checked tip
+  (not `branch -D`, so a later commit keeps the branch), and `git push <remote> --delete` with
+  `--force-with-lease` if GitHub kept the branch and it still points inside the PR. It waits, without asking GitHub, while an
   agent in the worktree is working or blocked, its space is on screen, or a terminal from another
   space is in it. Kept leftovers (unsaved work, later commits, a locked worktree, the PR closed,
   or a week of waiting) notify you once; every outcome is a `cleanup` history event.

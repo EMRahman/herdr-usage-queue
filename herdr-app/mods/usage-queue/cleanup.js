@@ -69,21 +69,27 @@ export async function cleanUpMerged({ git, repo, branch, number, headOid, freeFo
   if (tree) {
     if (tree.main) return kept(`${branch} is checked out in your main checkout.`);
     if (tree.locked) return kept(`The worktree at ${tree.path} is locked.`);
-    const status = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain"]);
+    // Untracked files are asked for: status.showUntrackedFiles=no would hide them otherwise.
+    const status = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
     if (!status.ok) return wait(short(status.err, "git status failed."));
     if (status.out) return kept(`The worktree at ${tree.path} has uncommitted or untracked files.`);
     const busy = await freeFolder(tree.path);
     if (busy) return wait(busy);
-    // No --force: git still refuses if anything changed since the check above.
-    const gone = await run(["worktree", "remove", tree.path], 120_000);
+    // Its agent may have committed while its space was closing: check the tip again.
+    const now = await run(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+    if (now.out !== tip.out) return kept(`${branch} moved while it was being cleaned up.`);
+    // No --force, and untracked files counted whatever the repo's setting: git still refuses if
+    // anything changed since the check above.
+    const gone = await run(["-c", "status.showUntrackedFiles=all", "worktree", "remove", tree.path], 120_000);
     if (!gone.ok) return kept(short(gone.err, "git worktree remove failed."));
     removed.push("worktree");
   }
 
   if (tip.ok) {
-    // -D: a squash-merged branch isn't merged as git sees it. inPR() checked it above.
-    const deleted = await run(["branch", "-D", branch]);
-    if (!deleted.ok) return kept(short(deleted.err, `git branch -D ${branch} failed.`));
+    // Not `branch -D`: a squash-merged branch isn't merged as git sees it, so delete the ref
+    // only if it's still the commit inPR() checked. A later commit keeps the branch.
+    const deleted = await run(["update-ref", "-d", `refs/heads/${branch}`, tip.out]);
+    if (!deleted.ok) return kept(`${branch} has commits that aren't in PR #${number}.`);
     removed.push("branch");
   }
 

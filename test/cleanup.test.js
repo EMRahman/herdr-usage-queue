@@ -76,6 +76,32 @@ describe("cleanUpMerged", () => {
     expect(onRemote(repo, branch)).toBe(true);
   });
 
+  test("untracked files in a repo that hides them from status: still kept", async () => {
+    sh(repo, "config", "status.showUntrackedFiles", "no");
+    writeFileSync(join(tree, "notes.txt"), "not committed");
+    const r = await clean();
+    expect(r).toMatchObject({ status: "kept", removed: [] });
+    expect(existsSync(join(tree, "notes.txt"))).toBe(true);
+  });
+
+  test("a commit while its space closes: everything is kept", async () => {
+    const r = await clean({ freeFolder: async () => { commit(tree, "g.txt", "committed while closing"); return ""; } });
+    expect(r).toMatchObject({ status: "kept", removed: [] });
+    expect(r.reason).toContain("moved");
+    expect(existsSync(tree)).toBe(true);
+  });
+
+  test("a commit just before the worktree goes: the branch is kept", async () => {
+    const raced = async (cwd, args) => {
+      if (args.includes("worktree") && args.includes("remove")) commit(tree, "h.txt", "committed just before removal");
+      return git(cwd, args);
+    };
+    const r = await clean({ git: raced });
+    expect(r).toMatchObject({ status: "kept", removed: ["worktree"] });
+    expect(branchExists(repo, branch)).toBe(true);
+    expect(sh(repo, "log", "-1", "--format=%s", branch)).toBe("committed just before removal");
+  });
+
   test("a commit made after the PR's head: everything is kept", async () => {
     commit(tree, "d.txt", "more work after the merge");
     const r = await clean();
