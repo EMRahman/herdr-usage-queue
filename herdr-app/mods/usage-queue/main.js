@@ -648,17 +648,16 @@ export default class UsageQueue extends View {
     }));
   }
 
-  jobRow(t, job, kind) {
+  jobRow(t, job, kind, wait = null) {
     const s = jobState(job.id);
     const j = kind === "launched" ? { light: s.launched?.light ?? "yellow", reason: "" } : jobLight(job);
     const est = running.estimates.get(job.id);
+    const waitText = wait ? `Waits for ${wait.job.title}, which ${wait.why}.` : "";
     let right = null;
     if (kind === "ready") {
       const launching = running.launches.has(job.id);
       const auto = s.approval?.auto;
-      const wait = blockedBy(job, data.jobs, data.state);
       const red = j.light === "red";
-      const waitText = wait ? `Waits for ${wait.job.title}, which ${wait.why}.` : "";
       right = launching
         ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
         : auto
@@ -690,19 +689,19 @@ export default class UsageQueue extends View {
     }
     const tip = kind === "launched"
       ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}${s.launched.pr?.error ? `\n⚠ ${s.launched.pr.error}` : ""}`
-      : `${job.title}\n${LIGHT_WORD[j.light]}: ${j.reason}${s.approval?.hash === job.hash ? `\n${routeText(s.approval.route)}` : ""}`;
+      : [job.title, `${LIGHT_WORD[j.light]}: ${j.reason}`, s.approval?.hash === job.hash ? routeText(s.approval.route) : "", waitText]
+        .filter(Boolean).join("\n");
     return h_flex().id(`job-${kind}-${job.id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(7)
       .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(tip)
       .on_click(() => this.openJob(job.id))
       .child(dot(j.light, 7))
-      .child(this.rowTitle(t, job, kind))
+      .child(this.rowTitle(t, job, kind, wait))
       .child(right);
   }
 
   /** A row's title, and "· after <job>" beside it on the same line for a job that's waiting. Both
    *  shrink and end in "…" when the row is short of room. */
-  rowTitle(t, job, kind) {
-    const wait = kind === "ready" ? blockedBy(job, data.jobs, data.state) : null;
+  rowTitle(t, job, kind, wait) {
     const title = div().min_w(0).truncate().text_size(12.5).text_color(kind === "launched" ? t.muted : t.foreground).child(job.title);
     if (!wait) return title.flex_1();
     return h_flex().flex_1().min_w(0).gap(4).items_center()
@@ -730,9 +729,17 @@ export default class UsageQueue extends View {
           .tooltip(draft ? "Add a job (continue your draft)" : "Add a job").on_click(() => this.openAdd())
           .child(svg(ICON.add).size(14)));
 
-    const rows = [];
+    const rows = [], waitingRows = [];
+    for (const job of lists[this.tab]) {
+      const wait = blockedBy(job, data.jobs, data.state);
+      const row = this.jobRow(t, job, this.tab, wait);
+      (wait ? waitingRows : rows).push(row);
+    }
+    if (waitingRows.length) {
+      rows.push(div().id("waiting-head").px(8).pt(8).pb(2).text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"));
+      rows.push(...waitingRows);
+    }
     if (this.tab === "pending") {
-      for (const job of lists.pending) rows.push(this.jobRow(t, job, "pending"));
       for (const p of data.problems) {
         rows.push(h_flex().id(`problem-${p.id}`).h(24).px(8).gap(8).items_center().tooltip(`jobs/${p.id}.json: ${p.error}`)
           .child(dot("red", 7)).child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(`${p.id}.json: ${p.error}`)));
@@ -740,7 +747,6 @@ export default class UsageQueue extends View {
       if (!rows.length) rows.push(div().id("empty").px(8).py(4).text_size(12).text_color(t.dim)
         .child(data.loaded ? "Nothing waits for approval. Click + to add a job." : "Loading…"));
     } else {
-      for (const job of lists.ready) rows.push(this.jobRow(t, job, "ready"));
       if (!lists.ready.length) rows.push(div().id("empty").px(8).py(4).text_size(12).text_color(t.dim)
         .child("Approved jobs wait here until you launch them."));
       if (lists.launched.length) {
@@ -754,7 +760,7 @@ export default class UsageQueue extends View {
       .child(header)
       .child(h_flex().px(16).pb(4).gap(8).items_center()
         .child(div().flex_1().text_size(11).text_color(t.dim)
-          .child(this.tab === "pending" ? "Pending launch approval" : "Ready to launch"))
+          .child(this.tab === "pending" ? "Pending launch approval" : "Approved jobs"))
         .when(this.tab === "ready" && scheduled().length > 0, (el) => el.child(
           div().id("pause").text_size(11).cursor_pointer()
             .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
