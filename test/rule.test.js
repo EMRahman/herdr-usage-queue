@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { DAY, HOUR, judgePool, poolsFromReport, windowKind } from "../herdr-app/mods/usage-queue/rule.js";
+import {
+  checkIn, CONTRACT_FRESH_MS, contractUsable, DAY, HOUR, judgeAll, judgePool, poolsFromContract, poolsFromReport, windowKind,
+} from "../herdr-app/mods/usage-queue/rule.js";
 
 // The design doc's example: 2026-11-26 22:52 UTC.
 const NOW = Date.parse("2026-11-26T22:52:00Z");
@@ -129,5 +131,83 @@ describe("judgePool", () => {
     const j = judgePool(pool([w("5h", 90, 2 * HOUR, 5 * HOUR)], { readAt: NOW - 2 * HOUR }), NOW);
     expect(j.light).toBe("red");
     expect(j.reason).toContain("stale");
+  });
+});
+
+// The same readings as REPORT, as Usage Monitor publishes them (its contract.js).
+const contractWindow = (kind, label, leftPct, resetsAt, lengthMs) => ({ kind, label, leftPct, resetsAt, lengthMs, light: null });
+const CONTRACT = {
+  version: 1,
+  readAt: NOW,
+  checkedAt: NOW,
+  pools: [
+    { id: "claude", provider: "claude", account: null, plan: "pro", readAt: NOW, ttlMs: 180000, heldResets: [], windows: [
+      contractWindow("5h", "5h session", 91, at(4.1 * HOUR), 5 * HOUR),
+      contractWindow("weekly", "7d weekly", 4, at(4.1 * HOUR), 7 * DAY),
+    ] },
+    { id: "codex", provider: "codex", account: null, plan: "plus", readAt: NOW, ttlMs: 3600000, heldResets: [], windows: [
+      contractWindow("5h", "5h session", 0, at(1.6 * HOUR), 5 * HOUR),
+      contractWindow("weekly", "Weekly", 54, at(5.7 * DAY), 7 * DAY),
+    ] },
+    { id: "antigravity/gemini-models", provider: "antigravity", name: "Gemini Models", account: "default", plan: null,
+      models: ["Gemini 4 Neon", "Gemini 3.8 Flash"], readAt: NOW, ttlMs: 3600000, windows: [
+        contractWindow("weekly", "Weekly Limit Remaining", 68, at(6.4 * DAY), 7 * DAY),
+        contractWindow("5h", "Five Hour Limit Remaining", 74, at(1.4 * HOUR), 5 * HOUR),
+      ] },
+    { id: "antigravity/claude-and-gpt-models", provider: "antigravity", name: "Claude and GPT models", account: "default",
+      plan: null, models: ["Claude Opus 5.5", "Claude Sonnet 5.5"], readAt: NOW, ttlMs: 3600000, windows: [
+        contractWindow("weekly", "Weekly Limit Remaining", 50, at(6.4 * DAY), 7 * DAY),
+        contractWindow("5h", "Five Hour Limit Remaining", 100, null, 5 * HOUR),
+      ] },
+  ],
+};
+
+describe("Usage Monitor's published readings", () => {
+  test("give the same pools as the bridge report", () => {
+    expect(poolsFromContract(CONTRACT)).toEqual(poolsFromReport(REPORT));
+  });
+
+  test("so every pool is judged the same", () => {
+    for (const offset of [0, 3 * HOUR, 5 * HOUR]) {
+      expect(judgeAll(poolsFromContract(CONTRACT), NOW + offset)).toEqual(judgeAll(pools, NOW + offset));
+    }
+  });
+
+  test("a window's own length wins over its kind's; an unknown kind is read from the label", () => {
+    const [pool] = poolsFromContract({ pools: [{ id: "cursor", provider: "cursor", readAt: NOW, windows: [
+      { kind: "monthly", label: "month · Auto", leftPct: 70, resetsAt: at(10 * DAY), lengthMs: 31 * DAY },
+      { kind: "fortnightly", label: "Weekly", leftPct: 40, resetsAt: null, lengthMs: null },
+      { kind: "5h", label: "broken", leftPct: null, resetsAt: null, lengthMs: null },
+    ] }] });
+    expect(pool).toMatchObject({ name: "Cursor", ttl: null, models: null });
+    expect(pool.windows).toEqual([
+      { kind: "monthly", label: "month · Auto", leftPct: 70, resetsAt: NOW + 10 * DAY, lengthMs: 31 * DAY },
+      { kind: "weekly", label: "Weekly", leftPct: 40, resetsAt: null, lengthMs: 7 * DAY },
+    ]);
+  });
+
+  test("are used only while Usage Monitor keeps publishing them", () => {
+    expect(contractUsable(CONTRACT, NOW + 60_000)).toBe(true);
+    expect(contractUsable(CONTRACT, NOW + CONTRACT_FRESH_MS)).toBe(false);
+    expect(contractUsable({ ...CONTRACT, version: 2 }, NOW)).toBe(false);
+    expect(contractUsable({ ...CONTRACT, checkedAt: undefined }, NOW)).toBe(false);
+    expect(contractUsable(undefined, NOW)).toBe(false);
+    expect(poolsFromContract(undefined)).toEqual([]);
+  });
+});
+
+test("poolsFromReport: a window with no figure is left out, not read as 100% left", () => {
+  const [pool] = poolsFromReport({ timestamp: NOW, others: [{ id: "cursor", windows: [
+    { kind: "month", scope: null, used_percent: null, resets_at: null },
+    { kind: "month", scope: "Auto", used_percent: 30, resets_at: null },
+  ] }] });
+  expect(pool.windows.map((w) => w.leftPct)).toEqual([70]);
+});
+
+describe("checkIn", () => {
+  test("adds or refreshes this mod, and takes it out, leaving other consumers", () => {
+    expect(checkIn(undefined, "usage-queue", true, NOW)).toEqual({ "usage-queue": NOW });
+    expect(checkIn({ other: 1, "usage-queue": 2 }, "usage-queue", true, NOW)).toEqual({ other: 1, "usage-queue": NOW });
+    expect(checkIn({ other: 1, "usage-queue": 2 }, "usage-queue", false, NOW)).toEqual({ other: 1 });
   });
 });

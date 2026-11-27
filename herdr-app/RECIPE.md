@@ -53,8 +53,11 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 
 ## How it behaves
 
-- **Readings**: every 60s the sidebar copy runs Usage Monitor's `bridge.js --cached` (Bun) and
-  judges each pool (a provider account, or an Antigravity model group):
+- **Readings**: every 60s the sidebar copy reads Usage Monitor's published readings,
+  `shared("usage-monitor.windows")`, and judges each pool (a provider account, or an
+  Antigravity model group). When nothing has been published for 5 minutes (an older Usage
+  Monitor, or none of its views open) it runs Usage Monitor's `bridge.js --cached` (Bun)
+  instead.
   - **Red (Not yet)**: any window at or below its reserve (5h: 25%, weekly: 15%, daily: 15%,
     monthly: 10%), less than 5 points above it, or a reading older than twice the provider's
     refresh interval plus 5 minutes.
@@ -63,9 +66,11 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
     would be lost.
   - **Yellow (Open)**: anything else above the reserve.
 
-  While any job is on Auto it runs the bridge without `--cached`, so readings stay fresh even
-  when Usage Monitor's readout isn't polling; the bridge still asks providers only on its own
-  schedule (3 / 15 / 60 min by activity, and just after a reset).
+  While any job is on Auto it checks in every minute as a consumer
+  (`shared("usage-monitor.consumers")["usage-queue"]`), so Usage Monitor keeps reading while
+  its readout is hidden, and it takes itself out when no job is on Auto. Without published
+  readings it runs the bridge without `--cached` instead. Either way providers are asked only
+  on the bridge's own schedule (3 / 15 / 60 min by activity, and just after a reset).
 - **Jobs** are `~/.config/herdr-app/usage-queue/jobs/*.json`; a folder watch picks up new and
   edited ones at once. An allocation stores a hash of the file. Editing the file restores the
   **Needs allocation** marker and clears launch eligibility until the allocation is saved again.
@@ -133,8 +138,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   after `agents`, else before `usage-monitor` or `sidebar-footer`). `herdr-app/install.ts` does
   it in the layout on screen, or `--layout <name>`; Herdr's own layouts are refused.
 - **`mods/usage-queue/`**: `mod.json` (`place: "none"`); `main.js` (the view: sidebar, job
-  dialog and add dialog by `props().dialog`); `rule.js` (pools and lights from the bridge
-  report); `queue.js` (job files, the lists, choices, what Auto launches); `catalog.js`
+  dialog and add dialog by `props().dialog`); `rule.js` (pools from Usage Monitor's published
+  readings or its bridge report, and their lights); `queue.js` (job files, the lists, choices, what Auto launches); `catalog.js`
   (agents, models, efforts, launch and estimate commands; `usage-queue/catalog.json`
   overrides any agent by id); `estimate.js` (the prompt, parsing the answer); `launch.js`
   (running estimates, the worktree and the launch); `base.js` (which commit to start from);
@@ -142,7 +147,7 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   job's worktree and branches);
   `store.js` (every file read and write); `time.js`.
 - **`herdr` functions**: `theme`, `props`, `shared` / `setShared` (a revision that redraws
-  every copy), `openOverlay` / `closeOverlay`, `run` (`space.new`, `space.select`,
+  every copy; Usage Monitor's readings and consumers), `openOverlay` / `closeOverlay`, `run` (`space.new`, `space.select`,
   `space.close`), `exec`, `readTextFile`, `writeTextFile`, `watchFolder`, `knownAgents`,
   `pickFolder`, `notify`, `focused`, `panes`, `spaces`, `agents`, `terminals`, `appHome`, `home`,
   `checking`; `fs/promises` and `crypto`.
@@ -167,7 +172,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - Dates are formatted by hand: the runtime ignores `toLocaleString`'s options.
 - No brake yet: a launched job isn't stopped if its pool reaches the reserve (drafted in
   DESIGN.md, [Brake](../DESIGN.md#5-brake)). Agents still stop at permission prompts.
-- Needs Usage Monitor installed (its bridge), Bun, git, and at least one of the agent CLIs.
+- Needs Usage Monitor installed (its published readings, or its bridge and Bun), git, and at
+  least one of the agent CLIs.
 
 ## Done when
 

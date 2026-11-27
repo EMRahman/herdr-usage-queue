@@ -25,9 +25,9 @@ import {
   agentLights, allocationFor, blockedBy, canWaitFor, classify, dueToLaunch, estimatorChoices, isFinished,
   jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, waitFor,
 } from "./queue.js";
-import { judgeAll, poolsFromReport } from "./rule.js";
+import { judgeAll } from "./rule.js";
 import {
-  deleteJob, ensureFolders, expandHome, loadCatalog, loadDraft, loadJobs, loadState, paths, readReport, record, saveDraft,
+  deleteJob, ensureFolders, expandHome, loadCatalog, loadDraft, loadJobs, loadState, paths, readPools, record, saveDraft,
   updateState, writeNewJob,
 } from "./store.js";
 import { ago, duration } from "./time.js";
@@ -100,9 +100,8 @@ async function refreshReadings() {
   readingSince = Date.now();
   try {
     data.catalog = await loadCatalog();
-    // Scheduled jobs need fresh readings even when Usage Monitor's readout isn't polling.
-    const report = await readReport(hasScheduled());
-    data.pools = poolsFromReport(report);
+    // Scheduled jobs need fresh readings even when Usage Monitor's readout is hidden.
+    data.pools = await readPools(hasScheduled());
     data.readAt = Date.now();
     data.readError = "";
   } catch (e) {

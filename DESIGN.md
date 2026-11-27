@@ -1,8 +1,8 @@
 # Usage Queue: design
 
-Status: draft, revised 2026-11-27. Built (`herdr-app/mods/usage-queue/`): milestones 1 and 2,
+Status: draft, revised 2026-11-27. Built (`herdr-app/mods/usage-queue/`): milestones 1, 2 and 3,
 and from milestone 4 Auto launch, done detection, PR reviews and cleanup after a merge. Not
-built: milestone 3 (the contract), the [brake](#5-brake) and permission profiles.
+built: the [brake](#5-brake) and permission profiles.
 
 **Usage Queue** is a Herdr app mod that holds a queue of agent jobs. When one of your
 subscriptions has allowance that would otherwise reset unused, it proposes a job for it, with a
@@ -228,9 +228,8 @@ that. This, not the cost estimate, is what makes the reserve a guarantee.
   isn't braked at once.
 - **Stale reading:** the reading is older than the light's staleness limit, so the queue can't
   tell whether the reserve is safe. This only works if readings keep coming while jobs run.
-  Today the queue asks Usage Monitor for fresh readings only while a job is on Auto
-  (`readReport(hasScheduled())`), so that becomes `hasScheduled() || hasRunning()`. Once
-  milestone 3 ships, the consumer keepalive does the same job.
+  Today the queue checks in as a consumer, so Usage Monitor keeps reading, only while a job
+  is on Auto (`readPools(hasScheduled())`), so that becomes `hasScheduled() || hasRunning()`.
 - Not when you said **Let it finish** for that job (below).
 
 The pool's light can be red for your own work as much as the job's. That's the point: the
@@ -401,18 +400,22 @@ a file in its folder changes, and inside the app home, where mods may write file
 
 ## Data contract with Usage Monitor
 
-Usage Monitor publishes, after every reading:
+Built (milestone 3): Usage Monitor's `contract.js` publishes, after every reading, and the
+queue's `readPools` reads it:
 
 ```ts
 shared("usage-monitor.windows") = {
   version: 1,
   readAt: number,                  // ms epoch of the newest reading
+  checkedAt: number,               // ms epoch of Usage Monitor's last read, changed or not
   pools: Array<{
-    id: string,                    // "claude:personal", "codex", "antigravity/gemini"
+    id: string,                    // "claude", "codex", "antigravity/gemini-models", "cursor"
     provider: string,              // "claude" | "codex" | "antigravity" | …
-    account?: string,
-    plan?: string,
-    readAt: number,                // this pool's reading; stale when old
+    account: string | null,
+    plan: string | null,
+    readAt: number | null,         // this pool's reading; stale when old
+    ttlMs: number | null,          // Usage Monitor's refresh interval for it; stale past 2× + 5 min
+    name?: string,                 // the model group, for model-group pools
     models?: string[],             // for model-group pools
     windows: Array<{
       kind: "5h" | "weekly" | "daily" | "monthly" | "other",
@@ -422,7 +425,7 @@ shared("usage-monitor.windows") = {
       lengthMs: number | null,
       light: "untapped" | "on-pace" | "tight" | null,   // display only
     }>,
-    heldResets?: Array<{ id: string, label: string, expiresAt: string | null, usableNow: boolean }>,
+    heldResets?: Array<{ id: string, label: string, count: number, expiresAt: string | null, usableNow: boolean }>,
   }>,
 }
 ```
@@ -432,11 +435,16 @@ shared("usage-monitor.windows") = {
   logic.
 - `account` holds the email as Usage Monitor shows it. Usage Queue only shows it locally.
 - **Stale readings**: a stale pool is treated as closed, and a running job on it is braked.
-- **Freshness**: Usage Monitor polls only while its readout is visible. Decision: it keeps a slow
-  poll while any consumer is registered (`shared("usage-monitor.consumers")`), so the queue
-  never calls the provider APIs itself.
-- **Fallback** while the contract doesn't exist: `exec("bun", [bridge.js, "--cached"])` and
-  normalise the report. For development only.
+- **Pool ids** are the provider for single-account providers. Several accounts of one provider
+  (`claude:work`) come later, when Usage Monitor reads them.
+- **Freshness**: Usage Monitor polls only while its readout is visible, or while a consumer has
+  checked in within 3 minutes: `shared("usage-monitor.consumers") = { [mod id]: ms epoch }`.
+  The queue checks in every minute while a job is on Auto, and takes itself out after. Usage
+  Monitor's poll still asks providers only on the bridge's adaptive schedule, so the queue never
+  calls the provider APIs itself.
+- **Fallback** when nothing has been published for 5 minutes (`checkedAt`): an older Usage
+  Monitor, or none of its views open. The queue runs `bun bridge.js` itself (`--cached` unless a
+  job is on Auto) and normalises the report, as before milestone 3.
 
 ## UI
 
@@ -494,8 +502,9 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 2. **Allocate and launch** (built): one Launch queue with readiness, manual sizing and optional
    estimates, the add-job form, and manual Launch into a worktree in a
    background space. You watch it; no brake or done detection yet. History JSONL is written.
-3. **Contract**: Usage Monitor publishes `usage-monitor.windows` (+ consumers keepalive), so
-   readings keep coming while its readout is hidden.
+3. **Contract** (built): Usage Monitor publishes `usage-monitor.windows` (+ consumers
+   keepalive), so readings keep coming while its readout is hidden. The bridge stays as the
+   fallback.
 4. **Auto-launch**: the auto-launch toggle and `"launch": "auto"`. This is the first unattended
    run, so it brings done detection, the brake and permission profiles. Built: Auto, done
    detection (agent idle, PR merged, Mark finished), PR review rounds, cleanup after a merge.
