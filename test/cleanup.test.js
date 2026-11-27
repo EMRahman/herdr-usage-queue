@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanUpMerged, cleanupEntry, hiddenFromStatus, ignoredPaths, parseWorktrees, rebuildable } from "../herdr-app/mods/usage-queue/cleanup.js";
@@ -113,6 +113,19 @@ describe("cleanUpMerged", () => {
       expect(r.reason).toContain("b.txt");
       sh(tree, "update-index", flag.replace("--", "--no-"), "b.txt");
       sh(tree, "checkout", "--", "b.txt");
+    }
+  });
+
+  test("a flagged file it can't read: kept", async () => {
+    sh(tree, "update-index", "--skip-worktree", "b.txt");
+    writeFileSync(join(tree, "b.txt"), "edited and then locked");
+    chmodSync(join(tree, "b.txt"), 0o000);
+    try {
+      const r = await clean();
+      expect(r).toMatchObject({ status: "kept", removed: [] });
+      expect(r.reason).toContain("b.txt");
+    } finally {
+      chmodSync(join(tree, "b.txt"), 0o644);
     }
   });
 

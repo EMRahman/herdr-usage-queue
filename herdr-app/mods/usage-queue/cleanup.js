@@ -115,7 +115,8 @@ export async function cleanUpMerged({ git, repo, branch, number, headOid, freeFo
     }
     for (const file of hidden) {
       const hash = await run(["-C", tree.path, "hash-object", "--", file.path]);
-      if (hash.ok ? hash.out !== file.blob : !/could not open|No such file/i.test(hash.err)) {
+      // Only a file that isn't there is let go: unreadable (permission denied) can't be checked.
+      if (hash.ok ? hash.out !== file.blob : !/No such file or directory/.test(hash.err)) {
         return kept(`The worktree at ${tree.path} has edits git is told to ignore (skip-worktree or assume-unchanged): ${file.path}.`);
       }
     }
