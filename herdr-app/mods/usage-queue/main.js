@@ -626,11 +626,19 @@ export default class UsageQueue extends View {
       .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(tip)
       .on_click(() => (kind === "launched" ? this.openLaunched(job) : this.openJob(job.id)))
       .child(dot(j.light, 7))
-      .child(div().flex_1().min_w(0).truncate().text_size(12.5)
-        .text_color(kind === "launched" ? t.muted : t.foreground).child(job.title)
-        .when(kind === "ready" && Boolean(blockedBy(job, data.jobs, data.state)), (el) => el.child(
-          div().text_color(t.dim).child(` · after ${blockedBy(job, data.jobs, data.state).job.title}`))))
+      .child(this.rowTitle(t, job, kind))
       .child(right);
+  }
+
+  /** A row's title, and "· after <job>" beside it on the same line for a job that's waiting. Both
+   *  shrink and end in "…" when the row is short of room. */
+  rowTitle(t, job, kind) {
+    const wait = kind === "ready" ? blockedBy(job, data.jobs, data.state) : null;
+    const title = div().min_w(0).truncate().text_size(12.5).text_color(kind === "launched" ? t.muted : t.foreground).child(job.title);
+    if (!wait) return title.flex_1();
+    return h_flex().flex_1().min_w(0).gap(4).items_center()
+      .child(title)
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(`· after ${wait.job.title}`));
   }
 
   openLaunched(job) {
