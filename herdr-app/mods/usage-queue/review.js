@@ -93,6 +93,13 @@ export function roundMessage({ round, number, url, branch, items, mode }) {
   ].join("\n");
 }
 
+/** `hc send`'s arguments for handing a round to an agent that isn't working. `--if` only knows
+ *  "idle" and "working", and an agent sits at "done" after a turn until you look at it, so a
+ *  "done" agent is sent to without the guard (the watcher already saw it wasn't working). */
+export function sendArgs(terminal, status, message) {
+  return ["send", ...(status === "idle" ? ["--if", "idle"] : []), terminal, message];
+}
+
 /** What the launch adds to the job's prompt when a PR is wanted. */
 export function prInstructions({ branch, baseBranch, mode }) {
   return [

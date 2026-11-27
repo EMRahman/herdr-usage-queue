@@ -19,7 +19,7 @@ import {
 import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
 import { fetchPR, findPR, mergePR, myLogin } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
-import { MAX_ROUNDS, reviewStep, roundMessage } from "./review.js";
+import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
   agentLights, blockedBy, canWaitFor, classify, dueToLaunch, routeOptions, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
 } from "./queue.js";
@@ -228,22 +228,24 @@ function agentIn(folder) {
   return agents().find((a) => (cwd.get(a.pane) ?? "").startsWith(folder))?.address ?? null;
 }
 
-/** Hands a review round to the job's agent, or to a new one in its worktree if it's gone. */
+/** Hands a review round to the job's agent, or to a new one in its worktree if it's gone.
+ *  Returns "" when it went, else why it didn't. */
 async function sendRound(job, launched, message) {
   const terminal = launched.pr.terminal;
   const agent = terminal ? agents().find((a) => a.address === terminal) : null;
   if (agent) {
-    const r = await exec("hc", ["send", "--if", "idle", terminal, message], { timeout: 75_000 });
-    return r.code === 0;
+    const r = await exec("hc", sendArgs(terminal, agent.status, message), { timeout: 75_000 });
+    if (r.code === 0) return "";
+    return `hc send to ${terminal} (${agent.status ?? "no status"}) failed: ${(r.stderr || r.stdout).trim().split("\n").at(-1) || `exit ${r.code}`}`;
   }
   const route = launched.route;
   const entry = agentOf(data.catalog, route.agent);
-  if (!entry) return false;
+  if (!entry) return `Unknown agent ${route.agent}, so there's no one to start in ${launched.folder}.`;
   run("space.new", {
     folder: launched.folder, argv: launchArgv(entry, route.model, route.effort), focus: false,
     task: `You're continuing work on this branch (${launched.branch}), which has an open pull request.\n\n${message}`,
   });
-  return true;
+  return "";
 }
 
 /** Checks every launched job that's waiting for its PR or under review, and takes the next step. */
@@ -308,12 +310,21 @@ async function watchPRs() {
       } else if (step.action === "address") {
         const round = (w.rounds ?? 0) + 1;
         const message = roundMessage({ round, number: w.number, url: w.url, branch: launched.branch, items: step.items, mode: w.mode });
-        if (await sendRound(job, launched, message)) {
+        const failed = await sendRound(job, launched, message);
+        if (!failed) {
           await patchWatch(id, {
             rounds: round, sentAt: now, changedAt: now, handled: [...(w.handled ?? []), ...step.items.map((x) => x.id)],
+            error: undefined, sendFailed: undefined,
           });
           await record({ type: "pr-round", job: id, number: w.number, round, comments: step.items.length });
           notify({ title: `Review round ${round}/${MAX_ROUNDS}: ${job.title}`, body: `${step.items.length} comment(s) sent to the agent.`, level: "info" });
+        } else {
+          // Tried again on the next poll; you hear about it once, not every two minutes.
+          await patchWatch(id, { error: failed, sendFailed: true });
+          if (!w.sendFailed) {
+            await record({ type: "pr-round-failed", job: id, number: w.number, round, error: failed });
+            notify({ title: `Couldn't send review round ${round}: ${job.title}`, body: `${failed}\nIt tries again every 2 minutes.`, level: "warning" });
+          }
         }
       }
     } catch (e) {

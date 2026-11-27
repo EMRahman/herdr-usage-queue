@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  approvedAt, newFeedback, prInstructions, prModeOf, readPR, reviewStep, roundMessage,
+  approvedAt, newFeedback, prInstructions, prModeOf, readPR, reviewStep, roundMessage, sendArgs,
 } from "../herdr-app/mods/usage-queue/review.js";
 
 const ME = "EMRahman";
@@ -98,5 +98,15 @@ describe("messages", () => {
     expect(prModeOf({})).toBe("off");
     expect(prModeOf({ pr: "merge" })).toBe("merge");
     expect(prModeOf({ pr: "yes" })).toBe("off");
+  });
+});
+
+describe("sendArgs", () => {
+  test("an idle agent is sent to only while it's still idle", () => {
+    expect(sendArgs("t40", "idle", "hi")).toEqual(["send", "--if", "idle", "t40", "hi"]);
+  });
+
+  test("a done agent (after a turn, unseen) is sent to: hc's --if has no \"done\"", () => {
+    expect(sendArgs("t40", "done", "hi")).toEqual(["send", "t40", "hi"]);
   });
 });
