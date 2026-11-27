@@ -98,6 +98,24 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   in the worktree if the old one is gone. New feedback after round 3, a failed merge, or a day
   with nothing happening ends the watch, with a notification. Launched rows show "PR #12 ·
   round 1/3", "Merged #12", "👍 #12" or "Needs you #12".
+- **After a merge** (`cleanup.js`): a merged PR, merged by the queue or by you, queues its job's
+  leftovers in `state.json`'s `cleanups`, by branch, so deleting the job doesn't keep them. Every
+  30s, after the PR checks, each is tried (at most every 2 minutes): `gh pr view --json
+  state,headRefOid`, then `git fetch <remote> refs/pull/<n>/head` if that commit isn't local.
+  The local branch's tip must be in the PR's head (`merge-base --is-ancestor`: a squash merge
+  leaves its commits out of main) and the worktree must have no uncommitted or untracked files
+  (`--untracked-files=all`, whatever the repo's `status.showUntrackedFiles`) and no ignored
+  files besides rebuildable ones (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`, caches,
+  `.DS_Store`, `*.pyc`, `*.log`: `rebuildable()`; a `.env` or a local database keeps it), and
+  no edits to files flagged skip-worktree or assume-unchanged (each, up to 50, is hashed and
+  compared with the index; status can't see them), or nothing is removed. Then: close the job's own space (one whose folder is the worktree and whose
+  terminals are all in it), and on the next pass, once its terminals have stopped and the tip
+  is unchanged, `git worktree remove` (no `--force`), `git update-ref -d` with the checked tip
+  (not `branch -D`, so a later commit keeps the branch), and `git push <remote> --delete` with
+  `--force-with-lease` if GitHub kept the branch and it still points inside the PR. It waits, without asking GitHub, while an
+  agent in the worktree is working or blocked, its space is on screen, or a terminal from another
+  space is in it. Kept leftovers (unsaved work, later commits, a locked worktree, the PR closed,
+  or a week of waiting) notify you once; every outcome is a `cleanup` history event.
 - **Wait for** (`"after"`, or "Wait for" in the job dialog): Nothing, or any unfinished
   job that doesn't itself wait on this one. Launch is disabled ("Waiting") and Auto only
   schedules until that job is finished: its PR merged (a PR approved in review mode stays
@@ -120,11 +138,14 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   (agents, models, efforts, launch and estimate commands; `usage-queue/catalog.json`
   overrides any agent by id); `estimate.js` (the prompt, parsing the answer); `launch.js`
   (running estimates, the worktree and the launch); `base.js` (which commit to start from);
+  `github.js` (the `gh` calls); `review.js` (review rounds); `cleanup.js` (removing a merged
+  job's worktree and branches);
   `store.js` (every file read and write); `time.js`.
 - **`herdr` functions**: `theme`, `props`, `shared` / `setShared` (a revision that redraws
-  every copy), `openOverlay` / `closeOverlay`, `run` (`space.new`, `space.select`), `exec`,
-  `readTextFile`, `writeTextFile`, `watchFolder`, `knownAgents`, `pickFolder`, `notify`,
-  `focused`, `panes`, `spaces`, `appHome`, `home`, `checking`; `fs/promises` and `crypto`.
+  every copy), `openOverlay` / `closeOverlay`, `run` (`space.new`, `space.select`,
+  `space.close`), `exec`, `readTextFile`, `writeTextFile`, `watchFolder`, `knownAgents`,
+  `pickFolder`, `notify`, `focused`, `panes`, `spaces`, `agents`, `terminals`, `appHome`, `home`,
+  `checking`; `fs/promises` and `crypto`.
 - **Programs it runs**: Bun (Usage Monitor's bridge, which reaches the providers' usage
   endpoints), `git`, the agent CLIs (`claude`, `codex`, `agy`), `gh` (GitHub, for PR jobs:
   reads the PR, merges it), `hc send` (review rounds), and `open` for a log or a PR. It reads
