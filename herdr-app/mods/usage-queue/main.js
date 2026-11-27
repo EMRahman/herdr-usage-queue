@@ -26,6 +26,7 @@ import {
   isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
 } from "./queue.js";
 import { judgeAll } from "./rule.js";
+import { suggestTitle, titleChoices } from "./title.js";
 import {
   deleteJob, ensureFolders, expandHome, loadCatalog, loadDraft, loadJobs, loadState, paths, readPools, record, saveDraft,
   updateState, writeNewJob,
@@ -48,6 +49,10 @@ const LATE_POLL_MS = 10 * 60_000;
 const LATE_FOR_MS = 14 * 24 * 3_600_000;
 const PR_MODE_TEXT = { off: "No PR", review: "Open a PR", merge: "PR + merge on 👍" };
 const BUSY_MS = 50_000;
+/** How long after typing in the prompt stops the title is suggested again. */
+const TITLE_AFTER_MS = 1_200;
+/** Shorter prompts don't say enough to name. */
+const TITLE_MIN_PROMPT = 12;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Fixed light colors, as Usage Monitor's: their meaning shouldn't depend on the theme.
 const LIGHT = { green: "#2fbf71", yellow: "#d4a72c", red: "#e5534b" };
@@ -74,7 +79,7 @@ const queue = [];
 let workers = 0;
 let reading = false;
 let dispatching = false;
-/** The add form as last typed: { title, prompt, repo, agents, priority }, or null. undefined
+/** The add form as last typed: { title, titleManual, prompt, repo, agents, priority }, or null. undefined
  *  until read from draft.json. */
 let draft = undefined;
 
@@ -1446,10 +1451,26 @@ export default class UsageQueue extends View {
     loadIfNeeded(cx);
     this.adding = true;
     this.draftSeq = 0;
-    this.title = InputState.new({ value: "", placeholder: "e.g. Find and fix flaky tests" });
+    this.titleSeq = 0;
+    this.titleStatus = null;
     this.prompt = TextareaState.new({ value: "", placeholder: "What the agent should do. It gets this as its first message.", rows: 7 });
-    for (const input of [this.title, this.prompt]) input.on("change", (_e, cx) => { this.keepDraft(cx); cx.notify(); });
-    this.title.on("submit", () => this.prompt.focus());
+    this.title = InputState.new({ value: "", placeholder: "Suggested from the prompt, or type your own" });
+    this.prompt.on("change", (_e, cx) => {
+      this.keepDraft(cx);
+      if (!this.titleManual) this.scheduleTitle(cx);
+      cx.notify();
+    });
+    this.title.on("change", (_e, cx) => {
+      // Typing a title overrides the suggestion; clearing it hands the title back to the model.
+      if (!this.settingTitle) {
+        this.titleManual = Boolean(this.title.value().trim());
+        this.titleSeq++;
+        this.titleStatus = null;
+        if (!this.titleManual) this.scheduleTitle(cx);
+      }
+      this.keepDraft(cx);
+      cx.notify();
+    });
     const f = focused();
     this.focusedRepo = (f?.pane && panes().find((pn) => pn.pane === f.pane)?.cwd) || "";
     this.applyDraft(draft);
@@ -1465,8 +1486,8 @@ export default class UsageQueue extends View {
         cx.notify();
       });
     }
-    this.title.focus();
-    cx.timer.after(200, () => this.title.focus());
+    this.prompt.focus();
+    cx.timer.after(200, () => this.prompt.focus());
     cx.spawn(async (cx) => {
       try {
         const known = await knownAgents();
@@ -1488,15 +1509,67 @@ export default class UsageQueue extends View {
     this.prMode = d?.pr ?? "off";
     this.permissions = d?.permissions ?? "default";
     this.afterId = d?.after ?? null;
-    this.title.set_value(d?.title ?? "");
+    // An older draft has no flag: a title in it was typed by hand.
+    this.titleManual = Boolean(d?.title?.trim()) && (d?.titleManual ?? true);
+    this.titleSeq++;
+    this.titleStatus = null;
+    this.setTitle(d?.title ?? "");
     this.prompt.set_value(d?.prompt ?? "");
+  }
+
+  /** Sets the title field without counting it as typed by hand. */
+  setTitle(text) {
+    this.settingTitle = true;
+    try { this.title.set_value(text); } finally { this.settingTitle = false; }
+  }
+
+  /** Suggests a title once typing in the prompt stops, unless one was typed by hand. */
+  scheduleTitle(cx, delay = TITLE_AFTER_MS) {
+    const seq = ++this.titleSeq;
+    cx.timer.after(delay, (cx) => {
+      if (seq === this.titleSeq && !this.titleManual) this.suggest(cx, seq);
+    });
+  }
+
+  suggest(cx, seq = ++this.titleSeq) {
+    const prompt = this.prompt.value().trim();
+    if (prompt.length < TITLE_MIN_PROMPT) {
+      this.titleStatus = null;
+      return cx.notify();
+    }
+    const choices = titleChoices(data.catalog, {
+      installed: this.installed, pools: data.pools, judged: data.judged, jobAgents: [...this.agents],
+    });
+    this.titleStatus = { busy: true, by: choices[0] ? `${choices[0].agent.name} ${choices[0].model.label}` : "" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let status;
+      try {
+        const { title, by } = await suggestTitle({ prompt, choices, exec, cwd: this.repo ? expandHome(this.repo) : undefined });
+        if (seq !== this.titleSeq || this.titleManual) return;
+        this.setTitle(title);
+        status = { by };
+      } catch (e) {
+        if (seq !== this.titleSeq || this.titleManual) return;
+        status = { error: String(e?.message ?? e) };
+      }
+      this.titleStatus = status;
+      this.keepDraft(cx);
+      cx.notify();
+    });
+  }
+
+  /** Back to a suggested title, now. */
+  resuggest(cx) {
+    this.titleManual = false;
+    this.suggest(cx);
   }
 
   /** Remembers the form now and writes it to disk shortly after typing stops. */
   keepDraft(cx) {
     if (!this.agents) return;
     const d = {
-      title: this.title.value(), prompt: this.prompt.value(), repo: this.repo,
+      title: this.title.value(), titleManual: this.titleManual, prompt: this.prompt.value(), repo: this.repo,
       agents: [...this.agents], priority: this.priority, pr: this.prMode, permissions: this.permissions, after: this.afterId, at: Date.now(),
     };
     draft = d.title.trim() || d.prompt.trim() ? d : null;
@@ -1509,7 +1582,7 @@ export default class UsageQueue extends View {
   clearDraft(cx) {
     this.applyDraft(null);
     this.keepDraft(cx);
-    this.title.focus();
+    this.prompt.focus();
     cx.notify();
   }
 
@@ -1522,6 +1595,12 @@ export default class UsageQueue extends View {
     const waitOptions = data.jobs.filter((j) => !isFinished(jobState(j.id)));
     const afterId = waitOptions.some((j) => j.id === this.afterId) ? this.afterId : null;
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
+    const status = this.titleStatus;
+    const statusText = this.titleManual ? "· typed by you"
+      : status?.busy ? `· suggesting${status.by ? ` with ${status.by}` : ""}…`
+      : status?.error ? `· couldn't suggest one, so type it: ${status.error}`
+      : status?.by && title ? `· suggested by ${status.by}, edit to override`
+      : prompt.length < TITLE_MIN_PROMPT && !title ? "· suggested once you've written the prompt" : "";
     const save = (cx) => cx.spawn(async () => {
       if (!can) return;
       try {
@@ -1550,10 +1629,15 @@ export default class UsageQueue extends View {
       .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(title || prompt ? "Add a job · draft" : "Add a job"))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(v_flex().id("add-body").flex_1().min_h(0).pr(8).overflow_y_scrollbar().child(v_flex().flex_none().w_full()
-      .child(label("Title"))
-      .child(Input.new(this.title).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.8))
       .child(label("Prompt"))
       .child(Textarea.new(this.prompt).w_full().h(150).p(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.8))
+      .child(h_flex().items_end().gap(8)
+        .child(label("Title"))
+        .child(div().flex_1().min_w(0).pb(6).truncate().text_size(11).text_color(status?.error ? LIGHT.red : t.dim).child(statusText))
+        .when(Boolean(this.titleManual || status?.error) && prompt.length >= TITLE_MIN_PROMPT, (el) => el.child(div().pb(4)
+          .child(chip(t, "suggest-title", "Suggest", false, (_e, cx) => this.resuggest(cx),
+            "Replace this title with one suggested from the prompt.")))))
+      .child(Input.new(this.title).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.8))
       .child(label("Repository (runs in a new worktree)"))
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(this.repo ? t.foreground : t.dim)

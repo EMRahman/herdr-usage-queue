@@ -523,7 +523,8 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 5. **LLM and coding agent integration.** Create a job and schedule it from given details: a
    model (or coding agent) turns the details into a prompt, and the job is queued with its
    size, route, repeat and deadline. The job's title is generated from its content, so it
-   doesn't need to be typed. Also: cost learning per size and route, and background and space
+   doesn't need to be typed (built in the add dialog: a small model suggests it from the
+   prompt, and a typed title overrides it). Also: cost learning per size and route, and background and space
    runs.
 6. Later: global auto approval, learned `expectedUse`, daemon mode (with the move to a
    database), held-reset suggestions.
