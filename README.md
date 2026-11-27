@@ -37,7 +37,7 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    that run.
 
 4. **PR and reviews** (optional, set per job under "When it's done"): **Open a PR** has the agent
-   open a pull request when it's done. The queue then checks it on GitHub every 2 minutes and
+   open a pull request when it's done. The queue then checks it on GitHub every 30 seconds and
    sends new review comments back to the agent, up to 3 rounds, each ending in
    `@codex review`. **PR + merge on 👍** also merges it once it gets a 👍 (a 👍 reaction, an
    approving review, or Codex's "Didn't find any major issues"). New comments after the third

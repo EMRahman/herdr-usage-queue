@@ -94,7 +94,7 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **PR and reviews** (`"pr"`, or "When it's done" in the dialogs: No PR / Open a PR / PR +
   merge on 👍): the launch adds instructions to the prompt (commit, push the branch, `gh pr
   create`, don't merge). The sidebar copy then checks every 30s which agent is in the worktree
-  and, every 2 minutes, GitHub through `gh`: first `gh pr list --head <branch>`, then the PR's
+  and GitHub through `gh`: first `gh pr list --head <branch>`, then the PR's
   reactions, comments, reviews and inline comments. A 👍 (reaction, approving review, or
   "Didn't find any major issues") newer than the last round merges it (squash, else merge, else
   rebase) or, in review mode, notifies you. Otherwise new feedback (inline comments, change

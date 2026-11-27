@@ -35,8 +35,9 @@ import { ago, duration } from "./time.js";
 const ID = "usage-queue";
 const REVISION = `${ID}.revision`;
 const POLL_MS = 60_000;
-/** How often a PR (or the branch, before it has one) is checked on GitHub. */
-const PR_POLL_MS = 2 * 60_000;
+/** How often a PR (or the branch, before it has one) is checked on GitHub: on every 30 s tick.
+ *  Just under 30 s, so a tick that fires a few ms early isn't skipped. */
+const PR_POLL_MS = 25_000;
 /** A PR watch with nothing happening for this long stops. */
 const WATCH_FOR_MS = 24 * 3_600_000;
 const PR_DONE = new Set(["merged", "closed", "needs-you", "ended"]);
@@ -515,11 +516,11 @@ async function watchPRs() {
           await record({ type: "pr-round", job: id, number: w.number, round, comments: step.items.length });
           notify({ title: `Review round ${round}/${MAX_ROUNDS}: ${job.title}`, body: `${step.items.length} comment(s) sent to the agent.`, level: "info" });
         } else {
-          // Tried again on the next poll; you hear about it once, not every two minutes.
+          // Tried again on the next poll; you hear about it once, not every 30 seconds.
           await patchWatch(id, { error: failed, sendFailed: true });
           if (!w.sendFailed) {
             await record({ type: "pr-round-failed", job: id, number: w.number, round, error: failed });
-            notify({ title: `Couldn't send review round ${round}: ${job.title}`, body: `${failed}\nIt tries again every 2 minutes.`, level: "warning" });
+            notify({ title: `Couldn't send review round ${round}: ${job.title}`, body: `${failed}\nIt tries again every 30 seconds.`, level: "warning" });
           }
         }
       }
@@ -933,7 +934,7 @@ export default class UsageQueue extends View {
       cx.notify();
     });
     cx.timer.every(POLL_MS, (cx) => cx.spawn(dispatch));
-    // Launched jobs' PRs: each is checked on GitHub every 2 minutes (see watchPRs).
+    // Launched jobs' PRs: each is checked on GitHub every 30 seconds (see watchPRs).
     // Then merged jobs' worktrees and branches go (see runCleanups).
     cx.timer.every(30_000, (cx) => cx.spawn(async () => {
       await watchPRs();
