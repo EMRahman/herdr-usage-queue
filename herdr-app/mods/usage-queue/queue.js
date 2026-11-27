@@ -36,9 +36,10 @@ export function readJob(id, text) {
 }
 
 /** A new job file's text. */
-export function jobText({ title, prompt, repo, agents, priority, pr = "off" }) {
+export function jobText({ title, prompt, repo, agents, priority, pr = "off", after = null }) {
   return JSON.stringify({
     about: title, prompt, where: { worktree: { repo } }, agents, priority, launch: "approve", pr,
+    ...(after ? { after } : {}),
   }, null, 2) + "\n";
 }
 

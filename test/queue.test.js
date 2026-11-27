@@ -44,7 +44,13 @@ describe("jobs", () => {
   test("a job file round-trips", () => {
     const text = jobText({ title: "Flaky tests", prompt: "Fix them", repo: "~/Code/app", agents: ["claude", "codex"], priority: 2 });
     const { job } = readJob("flaky", text);
-    expect(job).toMatchObject({ id: "flaky", title: "Flaky tests", repo: "~/Code/app", agents: ["claude", "codex"], priority: 2 });
+    expect(job).toMatchObject({ id: "flaky", title: "Flaky tests", repo: "~/Code/app", agents: ["claude", "codex"], priority: 2, after: null });
+    expect(text).not.toContain("after");
+  });
+
+  test("a job file keeps the job it waits for", () => {
+    const text = jobText({ title: "Asia", prompt: "Map", repo: "~/Code/app", agents: ["codex"], priority: 2, after: "tunnels-1" });
+    expect(readJob("asia", text).job.after).toBe("tunnels-1");
   });
 
   test("a job without a prompt or repo is an error", () => {

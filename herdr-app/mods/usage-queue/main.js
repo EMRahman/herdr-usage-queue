@@ -445,11 +445,11 @@ function loadIfNeeded(cx) {
   });
 }
 
-async function approve(job, route, auto, pr = "off") {
+async function approve(job, route, auto, pr = "off", after = job.after) {
   data.state = await updateState((s) => {
-    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr, after: job.after } };
+    s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr, after } };
   });
-  await record({ type: "approved", job: job.id, route, auto, pr });
+  await record({ type: "approved", job: job.id, route, auto, pr, after });
   changed();
 }
 
@@ -497,6 +497,13 @@ async function unapprove(job) {
 const elapsed = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : duration(ms));
 
 const dot = (light, size = 8) => div().size(size).flex_none().rounded(size).bg(LIGHT[light] ?? "#888888");
+
+/** "Wait for": Nothing, or one of the jobs it can wait for. pick(id or null, cx). */
+function waitChips(t, after, options, pick) {
+  return h_flex().gap(6).flex_wrap().items_center()
+    .child(chip(t, "after-none", "Nothing", !after, (_e, cx) => pick(null, cx)))
+    .children(options.map((o) => chip(t, `after-${o.id}`, o.title, after === o.id, (_e, cx) => pick(o.id, cx), o.id)));
+}
 
 function button(t, id, text, style, action, disabled = false) {
   const primary = style === "primary";
@@ -770,6 +777,7 @@ export default class UsageQueue extends View {
     loadIfNeeded(cx);
     this.estimator = null; // "agent/model" picked to run the estimate
     this.route = null; // the proposal as edited here
+    this.after = undefined; // "Wait for" as chosen here before approval (undefined: the file's)
     this.show = null; // "prompt" | "reply": the text box under the estimate
     this.preview = ""; // the prompt an estimate would send, before any run
     // The elapsed time while this job's estimate runs: redraw once a second, only then.
@@ -807,6 +815,13 @@ export default class UsageQueue extends View {
     // No estimate: start from the defaults, on the agent with the most allowance to spare.
     return pinnedRoute(data.catalog, job)
       ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged);
+  }
+
+  /** The job a pending job will wait for once approved: chosen here, else its file's, if that
+   *  job can still be waited for. */
+  pendingAfter(job) {
+    const after = this.after === undefined ? job.after : this.after;
+    return after && canWaitFor(job, data.jobs, data.state).some((o) => o.id === after) ? after : null;
   }
 
   /** A launched job's "finished" line: how it finishes, and Mark finished for when you say so. */
@@ -989,10 +1004,7 @@ export default class UsageQueue extends View {
       const wait = blockedBy(job, data.jobs, data.state);
       const options = canWaitFor(job, data.jobs, data.state);
       body.push(this.section(t, "Wait for"));
-      body.push(h_flex().gap(6).flex_wrap().items_center()
-        .child(chip(t, "after-none", "Nothing", !after, (_e, cx) => cx.spawn(async () => setAfter(job, null))))
-        .children(options.map((o) => chip(t, `after-${o.id}`, o.title, after === o.id,
-          (_e, cx) => cx.spawn(async () => setAfter(job, o.id)), o.id))));
+      body.push(waitChips(t, after, options, (id, cx) => cx.spawn(async () => setAfter(job, id))));
       body.push(div().pt(6).text_size(11.5).text_color(wait ? t.accent : t.dim).child(wait
         ? `Waits for ${wait.job.title}, which ${wait.why}. Then it starts from the remote's latest, so its work goes on top.`
         : after ? "What it waited for is finished: it can launch." : "Launches on its own terms. Pick a job to launch this one after it's finished (PR merged, or the agent done)."));
@@ -1001,6 +1013,15 @@ export default class UsageQueue extends View {
           (_e, cx) => cx.spawn(async () => { await markFinished(wait.job, true); cx.notify(); }),
           "If it's done as far as you're concerned (you merged it, or it's good enough), this one can launch.")));
       }
+    }
+    // Before approval, "Wait for" is chosen here and goes with the approval.
+    if (!approved) {
+      const after = this.pendingAfter(job);
+      body.push(this.section(t, "Wait for"));
+      body.push(waitChips(t, after, canWaitFor(job, data.jobs, data.state), (id, cx) => { this.after = id; cx.notify(); }));
+      body.push(div().pt(6).text_size(11.5).text_color(t.dim).child(after
+        ? `Launches only once ${jobById(after)?.title ?? after} is finished (PR merged, or the agent done).`
+        : "Launches on its own terms. Pick a job to launch this one after it's finished."));
     }
     // When it's done: a PR, and its reviews. Chosen before launch.
     if (!launched) {
@@ -1044,7 +1065,7 @@ export default class UsageQueue extends View {
     } else {
       footer.child(button(t, "approve", "Approve", "primary", (_e, cx) => cx.spawn(async () => {
         // Approving never launches; "launch": "auto" in the file starts it on Auto.
-        await approve(job, { size: "m", why: "", ...route }, job.launch === "auto", this.pr ?? job.pr);
+        await approve(job, { size: "m", why: "", ...route }, job.launch === "auto", this.pr ?? job.pr, this.pendingAfter(job));
         closeOverlay(p.overlay);
       }), !route));
     }
@@ -1103,6 +1124,7 @@ export default class UsageQueue extends View {
     this.agents = new Set(d?.agents ?? ["claude", "codex"]);
     this.priority = d?.priority ?? 2;
     this.prMode = d?.pr ?? "off";
+    this.afterId = d?.after ?? null;
     this.title.set_value(d?.title ?? "");
     this.prompt.set_value(d?.prompt ?? "");
   }
@@ -1112,7 +1134,7 @@ export default class UsageQueue extends View {
     if (!this.agents) return;
     const d = {
       title: this.title.value(), prompt: this.prompt.value(), repo: this.repo,
-      agents: [...this.agents], priority: this.priority, pr: this.prMode, at: Date.now(),
+      agents: [...this.agents], priority: this.priority, pr: this.prMode, after: this.afterId, at: Date.now(),
     };
     draft = d.title.trim() || d.prompt.trim() ? d : null;
     const seq = ++this.draftSeq;
@@ -1133,12 +1155,15 @@ export default class UsageQueue extends View {
     const title = this.title.value().trim();
     const prompt = this.prompt.value().trim();
     const can = Boolean(title && prompt && this.repo && this.agents.size);
+    // Any job not finished yet; a new job has nothing waiting on it, so there's no loop.
+    const waitOptions = data.jobs.filter((j) => !isFinished(jobState(j.id)));
+    const afterId = waitOptions.some((j) => j.id === this.afterId) ? this.afterId : null;
     const label = (text) => div().pt(14).pb(6).text_size(11.5).text_color(t.dim).child(text);
     const save = (cx) => cx.spawn(async () => {
       if (!can) return;
       try {
         const id = jobId(title);
-        await writeNewJob(id, jobText({ title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority, pr: this.prMode }));
+        await writeNewJob(id, jobText({ title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority, pr: this.prMode, after: afterId }));
         await record({ type: "added", job: id });
         draft = null;
         this.draftSeq++;
@@ -1186,6 +1211,9 @@ export default class UsageQueue extends View {
       .child(h_flex().gap(6).children(["off", "review", "merge"].map((m) => chip(t, `addpr-${m}`, PR_MODE_TEXT[m],
         this.prMode === m, (_e, cx) => { this.prMode = m; this.keepDraft(cx); cx.notify(); },
         m === "off" ? null : `Open a PR, then address review comments (up to ${MAX_ROUNDS} rounds)${m === "merge" ? " and merge it on a 👍" : ""}.`))))
+      .when(waitOptions.length > 0, (el) => el
+        .child(label("Wait for (launches only once that job is finished)"))
+        .child(waitChips(t, afterId, waitOptions, (id, cx) => { this.afterId = id; this.keepDraft(cx); cx.notify(); })))
       .when(Boolean(this.error), (el) => el.child(div().pt(10).text_size(12).text_color(LIGHT.red).child(this.error)))
       .child(div().pt(10).text_size(11).text_color(t.dim)
         .child(`Saved as a file in ${paths().jobs}. ⌘↵ adds it. Esc or Close keeps this as a draft.`))

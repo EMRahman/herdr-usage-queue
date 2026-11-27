@@ -39,7 +39,8 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    approving review, or Codex's "Didn't find any major issues"). New comments after the third
    round, or a failed merge, are handed to you with a notification.
 
-6. **Wait for another job** (optional, in a Ready job's dialog under "Wait for"): the job won't
+6. **Wait for another job** (optional, under "Wait for" when you add the job, or in its dialog
+   before or after approval): the job won't
    launch, by Launch or Auto, until that job is finished: its PR merged, or, without a PR, its
    agent done. Launches fetch the remote's latest first, so the work goes on top of what was
    just merged. With Auto on, it launches by itself once both the job it waits for is finished
