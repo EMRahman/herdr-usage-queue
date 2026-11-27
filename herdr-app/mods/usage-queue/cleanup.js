@@ -95,7 +95,8 @@ export async function cleanUpMerged({ git, repo, branch, number, headOid, freeFo
       // A push after the merge isn't in the PR: leave the branch for you.
       const known = (await run(["cat-file", "-e", `${sha}^{commit}`])).ok;
       if (!known || !(await inPR(sha))) return kept(`${branch} on ${remote} has commits that aren't in PR #${number}.`);
-      const pushed = await run(["push", "--quiet", remote, "--delete", branch], 120_000);
+      // The lease makes the remote refuse if the branch moved since ls-remote read it.
+      const pushed = await run(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${sha}`, remote, "--delete", branch], 120_000);
       if (!pushed.ok) return kept(short(pushed.err, `Couldn't delete ${branch} on ${remote}.`));
       removed.push(`${remote} branch`);
     }

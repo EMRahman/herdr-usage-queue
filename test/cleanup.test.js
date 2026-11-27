@@ -97,6 +97,23 @@ describe("cleanUpMerged", () => {
     expect(onRemote(repo, branch)).toBe(true);
   });
 
+  test("a push to the GitHub branch while it's being deleted: the delete is refused", async () => {
+    const other = join(repo, "..", "other");
+    sh(join(repo, ".."), "clone", "-q", join(repo, "..", "upstream.git"), "other");
+    sh(other, "checkout", "-q", branch);
+    const raced = async (cwd, args) => {
+      // Someone pushes after ls-remote read the branch, just before the delete.
+      if (args[0] === "push") {
+        commit(other, "f.txt", "pushed mid-cleanup");
+        sh(other, "push", "-q", "origin", branch);
+      }
+      return git(cwd, args);
+    };
+    const r = await clean({ git: raced });
+    expect(r).toMatchObject({ status: "kept", removed: ["worktree", "branch"] });
+    expect(sh(other, "ls-remote", "--heads", "origin", `refs/heads/${branch}`).split(/\s+/)[0]).toBe(sh(other, "rev-parse", "HEAD"));
+  });
+
   test("its space can't close yet: waits, and nothing is removed", async () => {
     const r = await clean({ freeFolder: async (path) => (path === realpathSync(tree) ? "Its agent is still working." : "") });
     expect(r).toEqual({ status: "wait", reason: "Its agent is still working.", removed: [] });
