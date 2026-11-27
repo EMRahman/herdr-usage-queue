@@ -66,8 +66,8 @@ const data = {
   state: { jobs: {} }, jobs: [], problems: [],
   loaded: false,
 };
-/** In-memory work: estimates and launches running now, by job id. */
-const running = { estimates: new Map(), launches: new Set() };
+/** In-memory work running now, by job id. */
+const running = { estimates: new Map(), launches: new Set(), deletions: new Set() };
 /** Each job's last estimate run, for the dialog: { by, prompt, reply, error, log, at }. */
 const lastRuns = new Map();
 /** Work asked for by dialogs, run by a sidebar copy. */
@@ -492,6 +492,18 @@ async function unapprove(job) {
   changed();
 }
 
+async function removeJob(id) {
+  if (running.deletions.has(id)) return;
+  running.deletions.add(id);
+  try {
+    await deleteJob(id);
+    await record({ type: "deleted", job: id });
+    await reloadJobs();
+  } finally {
+    running.deletions.delete(id);
+  }
+}
+
 // --- Small pieces ---
 
 const elapsed = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : duration(ms));
@@ -680,12 +692,21 @@ export default class UsageQueue extends View {
         : div().text_size(11.5).text_color(text === "Failed" ? LIGHT.red : t.dim).child(text);
     } else {
       const w = s.launched?.pr;
+      const finished = isFinished(s);
       const tone = !w ? t.dim : w.phase === "merged" || w.phase === "approved" ? LIGHT.green
         : w.phase === "needs-you" ? LIGHT.yellow : t.muted;
-      right = h_flex().flex_none().gap(4).items_center()
+      right = h_flex().min_w(0).gap(4).items_center()
         .when(Boolean(w?.error), (el) => el.child(div().id(`warn-${job.id}`).text_size(11).text_color(LIGHT.yellow)
           .tooltip(w.error).child("⚠")))
-        .child(div().text_size(11).text_color(tone).child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : ""));
+        .child(div().min_w(0).truncate().text_size(11).text_color(tone)
+          .child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : ""))
+        .when(finished, (el) => el.child(rowButton(t, `delete-${job.id}`, "Delete", true, `Delete ${job.title} from the queue`,
+          (cx) => cx.spawn(async () => {
+            const current = jobState(job.id);
+            if (jobById(job.id)?.hash === job.hash && current.launched?.hash === job.hash && isFinished(current)) {
+              await removeJob(job.id);
+            }
+          })).text_color(t.ansi1)));
     }
     const tip = kind === "launched"
       ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}${s.launched.pr?.error ? `\n⚠ ${s.launched.pr.error}` : ""}`
@@ -1046,9 +1067,7 @@ export default class UsageQueue extends View {
     const launching = running.launches.has(job.id);
     const footer = h_flex().pt(18).gap(8).items_center()
       .child(button(t, "delete", "Delete job", "danger", (_e, cx) => cx.spawn(async () => {
-        await deleteJob(job.id);
-        await record({ type: "deleted", job: job.id });
-        await reloadJobs();
+        await removeJob(job.id);
         closeOverlay(p.overlay);
       })))
       .child(div().flex_1());
