@@ -151,7 +151,7 @@ export function checkIn(consumers, id, wanted, now = Date.now()) {
  * reset. reason: one line for people. changesAt: when a red light can next change (ms), or null.
  */
 export function judgePool(pool, now = Date.now(), reserve = RESERVE) {
-  const base = { id: pool.id, headroom: 0, waste: 0, urgency: 0, binding: null, changesAt: null };
+  const base = { id: pool.id, readAt: Number.isFinite(pool.readAt) ? pool.readAt : null, headroom: 0, waste: 0, urgency: 0, binding: null, changesAt: null };
   if (!pool.windows?.length) return { ...base, light: "red", reading: "missing", reason: "No allowance reading" };
   if (!Number.isFinite(pool.readAt)) return { ...base, light: "red", reading: "stale", reason: "Reading age unknown" };
   if (pool.ttl && now - pool.readAt > 2 * pool.ttl + 5 * 60_000) {

@@ -186,6 +186,33 @@ describe("dueToLaunch", () => {
     expect(dueToLaunch(jobs, s, catalog, pools, judged("green", "red"), 1_000 + 5 * 60_000).map((x) => x.id)).toEqual([]);
     expect(dueToLaunch(jobs, s, catalog, pools, judged("green", "red"), 1_000 + 11 * 60_000).map((x) => x.id)).toEqual(["a"]);
   });
+
+  test("a finished job's pool stops settling once a reading taken after it finished arrives", () => {
+    const now = 1_000 + 5 * 60_000;
+    const due = (s, readAt) => {
+      const js = judged("green", "red");
+      js.claude.readAt = readAt;
+      return dueToLaunch(jobs, s, catalog, pools, js, now).map((x) => x.id);
+    };
+    const merged = state();
+    merged.jobs.x = { launched: { pool: "claude", at: 1_000, pr: { mode: "merge", phase: "merged", changedAt: 3 * 60_000 } } };
+    expect(due(merged, 2 * 60_000)).toEqual([]);           // reading from before the merge
+    expect(due(merged, 4 * 60_000)).toEqual(["a"]);        // reading after it
+
+    const open = state();
+    open.jobs.x = { launched: { pool: "claude", at: 1_000, pr: { mode: "merge", phase: "in-review", changedAt: 3 * 60_000 } } };
+    expect(due(open, 4 * 60_000)).toEqual([]);             // PR not merged: still settling
+
+    const noPr = state();
+    noPr.jobs.x = { launched: { pool: "claude", at: 1_000, finishedAt: 3 * 60_000 } };
+    expect(due(noPr, 4 * 60_000)).toEqual(["a"]);
+    noPr.jobs.x.launched.braked = { at: 3 * 60_000 };
+    expect(due(noPr, 4 * 60_000)).toEqual([]);             // braked isn't finished
+
+    const marked = state();
+    marked.jobs.x = { launched: { pool: "claude", at: 1_000, markedFinishedAt: 3 * 60_000 } };
+    expect(due(marked, 4 * 60_000)).toEqual(["a"]);
+  });
 });
 
 describe("estimate", () => {
