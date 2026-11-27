@@ -298,6 +298,8 @@ async function watchPRs() {
         continue;
       }
       const pr = await fetchPR(launched.folder, w.number);
+      // GitHub answered: an earlier failure to reach it is over (a failed send clears on its own).
+      if (w.error && !w.sendFailed) await patchWatch(id, { error: undefined });
       const step = reviewStep(pr, w, await myLogin(launched.folder), idle);
       if (step.action === "merged" || step.action === "closed") {
         await patchWatch(id, { phase: step.action, changedAt: now });
@@ -357,7 +359,7 @@ async function lateCheck(job, launched, w, now) {
     const state = await prState(launched.folder, w.number);
     if (state === "OPEN") return;
     const phase = state === "MERGED" ? "merged" : "closed";
-    await patchWatch(job.id, { phase, changedAt: now });
+    await patchWatch(job.id, { phase, changedAt: now, error: undefined, sendFailed: undefined });
     await record({ type: `pr-${phase}`, job: job.id, number: w.number, late: true });
     if (phase === "merged") {
       const waiting = data.jobs.filter((j) => (jobState(j.id).approval?.after ?? j.after) === job.id && !jobState(j.id).launched);
@@ -674,10 +676,13 @@ export default class UsageQueue extends View {
       const w = s.launched?.pr;
       const tone = !w ? t.dim : w.phase === "merged" || w.phase === "approved" ? LIGHT.green
         : w.phase === "needs-you" ? LIGHT.yellow : t.muted;
-      right = div().text_size(11).text_color(tone).child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : "");
+      right = h_flex().flex_none().gap(4).items_center()
+        .when(Boolean(w?.error), (el) => el.child(div().id(`warn-${job.id}`).text_size(11).text_color(LIGHT.yellow)
+          .tooltip(w.error).child("⚠")))
+        .child(div().text_size(11).text_color(tone).child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : ""));
     }
     const tip = kind === "launched"
-      ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}`
+      ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}${s.launched.pr?.error ? `\n⚠ ${s.launched.pr.error}` : ""}`
       : `${job.title}\n${LIGHT_WORD[j.light]}: ${j.reason}${s.approval?.hash === job.hash ? `\n${routeText(s.approval.route)}` : ""}`;
     return h_flex().id(`job-${kind}-${job.id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(7)
       .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(tip)
