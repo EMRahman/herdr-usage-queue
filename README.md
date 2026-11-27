@@ -41,8 +41,8 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    Once the PR is merged (by the queue or by you), the queue tidies up: it closes the job's
    space, removes its worktree, deletes the `queue/…` branch, and deletes the branch on GitHub
    if GitHub didn't. It only does this when everything there is already in the merged PR. A
-   worktree with uncommitted or untracked files, or a branch with commits pushed after the PR,
-   is kept, and you get a notification saying why. It waits while the agent is still working or
+   worktree with uncommitted or untracked files, ignored files that aren't just build output or
+   caches (a `.env`, say), or a branch with commits pushed after the PR, is kept, and you get a notification saying why. It waits while the agent is still working or
    while you have the job's space on screen.
 
 5. **Wait for another job** (optional, under "Wait for" when you add the job or open its dialog).

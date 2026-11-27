@@ -104,8 +104,10 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   state,headRefOid`, then `git fetch <remote> refs/pull/<n>/head` if that commit isn't local.
   The local branch's tip must be in the PR's head (`merge-base --is-ancestor`: a squash merge
   leaves its commits out of main) and the worktree must have no uncommitted or untracked files
-  (`--untracked-files=all`, whatever the repo's `status.showUntrackedFiles`), or nothing is
-  removed. Then: close the job's own space (one whose folder is the worktree and whose
+  (`--untracked-files=all`, whatever the repo's `status.showUntrackedFiles`) and no ignored
+  files besides rebuildable ones (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`, caches,
+  `.DS_Store`, `*.pyc`, `*.log`: `rebuildable()`; a `.env` or a local database keeps it), or
+  nothing is removed. Then: close the job's own space (one whose folder is the worktree and whose
   terminals are all in it), and on the next pass, once its terminals have stopped and the tip
   is unchanged, `git worktree remove` (no `--force`), `git update-ref -d` with the checked tip
   (not `branch -D`, so a later commit keeps the branch), and `git push <remote> --delete` with

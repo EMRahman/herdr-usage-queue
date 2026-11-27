@@ -26,6 +26,26 @@ export function parseWorktrees(output) {
     }));
 }
 
+/** Ignored folders that builds and installs recreate: a worktree holding only these can go. */
+const REBUILDABLE_DIRS = new Set([
+  "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+  "dist", "build", ".build", "target", "DerivedData", ".gradle", ".next", ".nuxt", ".svelte-kit", ".turbo",
+  ".parcel-cache", ".cache", "coverage", ".nyc_output", "test-results", "playwright-report",
+]);
+const REBUILDABLE_FILES = /(^|\/)(\.DS_Store|Thumbs\.db)$|\.(pyc|pyo|log|tsbuildinfo)$/;
+
+/** Whether an ignored path (as `git status --ignored=matching` lists it) is safe to lose. Anything
+ *  else ignored, such as a `.env` or a local database, may be someone's data. */
+export function rebuildable(path) {
+  const clean = path.replace(/\/+$/, "");
+  return clean.split("/").some((part) => REBUILDABLE_DIRS.has(part)) || REBUILDABLE_FILES.test(clean);
+}
+
+/** `git status --porcelain -z` output: the ignored paths ("!! "). */
+export function ignoredPaths(output) {
+  return String(output ?? "").split("\0").filter((e) => e.startsWith("!! ")).map((e) => e.slice(3));
+}
+
 const short = (err, fallback) => String(err ?? "").split("\n").map((l) => l.trim()).filter(Boolean).at(-1) || fallback;
 
 /**
@@ -73,6 +93,14 @@ export async function cleanUpMerged({ git, repo, branch, number, headOid, freeFo
     const status = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
     if (!status.ok) return wait(short(status.err, "git status failed."));
     if (status.out) return kept(`The worktree at ${tree.path} has uncommitted or untracked files.`);
+    // `worktree remove` deletes ignored files without --force: keep any that aren't rebuildable.
+    const ignored = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"]);
+    if (!ignored.ok) return wait(short(ignored.err, "git status failed."));
+    const keep = ignoredPaths(ignored.out).filter((p) => !rebuildable(p));
+    if (keep.length) {
+      const named = keep.slice(0, 3).join(", ") + (keep.length > 3 ? ` and ${keep.length - 3} more` : "");
+      return kept(`The worktree at ${tree.path} has ignored files that may be yours: ${named}.`);
+    }
     const busy = await freeFolder(tree.path);
     if (busy) return wait(busy);
     // Its agent may have committed while its space was closing: check the tip again.

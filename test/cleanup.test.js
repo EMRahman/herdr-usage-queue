@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanUpMerged, cleanupEntry, parseWorktrees } from "../herdr-app/mods/usage-queue/cleanup.js";
+import { cleanUpMerged, cleanupEntry, ignoredPaths, parseWorktrees, rebuildable } from "../herdr-app/mods/usage-queue/cleanup.js";
 
 const git = async (cwd, args) => {
   const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -82,6 +82,25 @@ describe("cleanUpMerged", () => {
     const r = await clean();
     expect(r).toMatchObject({ status: "kept", removed: [] });
     expect(existsSync(join(tree, "notes.txt"))).toBe(true);
+  });
+
+  test("an ignored .env in the worktree: kept, and the file stays", async () => {
+    sh(repo, "config", "core.excludesFile", join(repo, "..", "excludes"));
+    writeFileSync(join(repo, "..", "excludes"), ".env\nnode_modules/\n");
+    writeFileSync(join(tree, ".env"), "SECRET=1");
+    const r = await clean();
+    expect(r).toMatchObject({ status: "kept", removed: [] });
+    expect(r.reason).toContain(".env");
+    expect(existsSync(join(tree, ".env"))).toBe(true);
+  });
+
+  test("only rebuildable ignored files (node_modules, .DS_Store): it goes", async () => {
+    sh(repo, "config", "core.excludesFile", join(repo, "..", "excludes"));
+    writeFileSync(join(repo, "..", "excludes"), "node_modules/\n.DS_Store\n");
+    mkdirSync(join(tree, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(tree, "node_modules", "pkg", "index.js"), "");
+    writeFileSync(join(tree, ".DS_Store"), "");
+    expect(await clean()).toMatchObject({ status: "done", removed: ["worktree", "branch", "origin branch"] });
   });
 
   test("a commit while its space closes: everything is kept", async () => {
@@ -170,6 +189,22 @@ describe("cleanUpMerged", () => {
   test("nothing left (already cleaned up): done, nothing to remove", async () => {
     await clean();
     expect(await clean()).toEqual({ status: "done", reason: "", removed: [] });
+  });
+});
+
+describe("rebuildable", () => {
+  test("build output, installs and caches can go", () => {
+    for (const p of ["node_modules/", "web/node_modules/", ".venv/", "pkg/__pycache__/", "dist/", "app/build/", ".DS_Store", "a/b.pyc", "npm-debug.log", "tsconfig.tsbuildinfo"]) {
+      expect([p, rebuildable(p)]).toEqual([p, true]);
+    }
+  });
+  test("anything else ignored may be someone's data", () => {
+    for (const p of [".env", ".env.local", "dev.sqlite", "sub/out/", ".wrangler/", "notes/", "secrets.json"]) {
+      expect([p, rebuildable(p)]).toEqual([p, false]);
+    }
+  });
+  test("ignoredPaths reads -z status output", () => {
+    expect(ignoredPaths("?? new.txt\0!! .env\0!! node_modules/\0!! we ird.pyc\0")).toEqual([".env", "node_modules/", "we ird.pyc"]);
   });
 });
 
