@@ -1,7 +1,7 @@
 // Jobs in the launch queue and launch history.
 // Pure: job files, state and judgements in; lists and choices out.
 
-import { agentOf, estimators, modelOf, poolFor, poolsOfAgent } from "./catalog.js";
+import { agentOf, estimators, modelOf, PERMISSION_PROFILES, poolFor, poolsOfAgent, supportsPermissions } from "./catalog.js";
 import { baseOf } from "./base.js";
 import { prModeOf } from "./review.js";
 import { better } from "./rule.js";
@@ -16,6 +16,10 @@ export function readJob(id, text) {
   const repo = raw.where?.worktree?.repo ?? raw.repo;
   if (typeof repo !== "string" || !repo.trim()) return { error: "No repository (where.worktree.repo)." };
   const agents = Array.isArray(raw.agents) && raw.agents.length ? raw.agents.map(String) : ["claude"];
+  const permissions = raw.permissions === undefined ? "default" : raw.permissions;
+  if (typeof permissions !== "string" || !Object.hasOwn(PERMISSION_PROFILES, permissions)) {
+    return { error: "Permissions must be default, plan or edit." };
+  }
   return {
     job: {
       id,
@@ -29,6 +33,7 @@ export function readJob(id, text) {
       launch: raw.launch === "auto" ? "auto" : "approve",
       base: baseOf(raw),
       pr: prModeOf(raw),
+      permissions,
       after: typeof raw.after === "string" && raw.after.trim() ? raw.after.trim() : null,
       raw,
     },
@@ -36,9 +41,10 @@ export function readJob(id, text) {
 }
 
 /** A new job file's text. */
-export function jobText({ title, prompt, repo, agents, priority, pr = "off", after = null }) {
+export function jobText({ title, prompt, repo, agents, priority, pr = "off", permissions = "default", after = null }) {
   return JSON.stringify({
     about: title, prompt, where: { worktree: { repo } }, agents, priority, launch: "approve", pr,
+    ...(permissions !== "default" ? { permissions } : {}),
     ...(after ? { after } : {}),
   }, null, 2) + "\n";
 }
@@ -102,8 +108,12 @@ export function estimatorChoices(catalog, pools, judged, jobAgents = null) {
 }
 
 /** A route's pool and judgement: where an approved or proposed job would run. */
-export function routeStatus(catalog, route, pools, judged) {
+export function routeStatus(catalog, route, pools, judged, permissions = "default") {
   const agent = agentOf(catalog, route?.agent);
+  if (agent && !supportsPermissions(agent, permissions)) {
+    const label = PERMISSION_PROFILES[permissions]?.label ?? permissions;
+    return { agent, pool: null, judgement: { light: "red", reason: `${agent.name} does not support the ${label} permission profile` } };
+  }
   const pool = agent ? poolFor(agent, route.model, pools) : null;
   const judgement = pool ? judged[pool.id] : null;
   return { agent, pool, judgement: judgement ?? { light: "red", reason: "No allowance reading for this model" } };
@@ -113,14 +123,24 @@ export function routeStatus(catalog, route, pools, judged) {
  * The proposal to show from an estimate: the route with the greenest, most urgent pool;
  * ties go to the estimator's recommendation.
  */
-export function proposeRoute(catalog, estimate, pools, judged) {
+export function proposeRoute(catalog, estimate, pools, judged, permissions = "default") {
   if (!estimate?.routes?.length) return null;
   const rank = { green: 2, yellow: 1, red: 0 };
   const recommended = (r) => Number(r.agent === estimate.recommended);
-  const scored = estimate.routes.map((route) => ({ route, j: routeStatus(catalog, route, pools, judged).judgement }));
+  const scored = estimate.routes
+    .filter((route) => supportsPermissions(agentOf(catalog, route.agent), permissions))
+    .map((route) => ({ route, j: routeStatus(catalog, route, pools, judged, permissions).judgement }));
   scored.sort((a, b) => rank[b.j.light] - rank[a.j.light] || (b.j.urgency ?? 0) - (a.j.urgency ?? 0)
     || recommended(b.route) - recommended(a.route) || (b.j.headroom ?? 0) - (a.j.headroom ?? 0));
-  return { ...scored[0].route };
+  return scored.length ? { ...scored[0].route } : null;
+}
+
+export const SETTLE_MS = 10 * 60_000;
+
+export function settlingPools(state, now = Date.now(), settleMs = SETTLE_MS) {
+  return new Set(Object.values(state.jobs ?? {}).map((s) => s.launched)
+    .filter((run) => run?.pool && now - Math.max(run.at, run.resumedAt ?? 0) < settleMs)
+    .map((run) => run.pool));
 }
 
 /**
@@ -128,20 +148,63 @@ export function proposeRoute(catalog, estimate, pools, judged) {
  * route's light not red; by priority, at most one per pool, and none on a pool something launched
  * on within `settleMs` (readings lag use). Nothing while paused.
  */
-export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(), settleMs = 10 * 60_000) {
+export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(), settleMs = SETTLE_MS) {
   if (state.paused) return [];
-  const settling = new Set(Object.values(state.jobs ?? {})
-    .filter((s) => s.launched?.pool && now - s.launched.at < settleMs).map((s) => s.launched.pool));
+  const settling = settlingPools(state, now, settleMs);
   const due = [];
   for (const job of classify(jobs, state).queued) {
     const allocation = allocationFor(job, state);
     if (!allocation?.auto || blockedBy(job, jobs, state)) continue;
-    const { pool, judgement } = routeStatus(catalog, allocation.route, pools, judged);
+    const { pool, judgement } = routeStatus(catalog, allocation.route, pools, judged, job.permissions);
     if (!pool || judgement.light === "red" || settling.has(pool.id)) continue;
     settling.add(pool.id);
     due.push(job);
   }
   return due;
+}
+
+// --- Braking running jobs ---
+
+export function canBrake(entry) {
+  const run = entry?.launched;
+  return Boolean(run?.pool && !run.takenOver && run.pr?.phase !== "merged" && (!run.finishedAt || run.braked));
+}
+
+/** A plan for one reading. Status null means the agent is gone. Undefined means its identity or
+ *  status hasn't been established. Resume decisions share the same settle period as Auto. */
+export function brakeSteps(jobs, state, judged, agentStatus, now = Date.now(), settleMs = SETTLE_MS) {
+  const settling = settlingPools(state, now, settleMs);
+  const steps = [];
+  const resumes = [];
+  for (const job of [...jobs].sort(byPriority)) {
+    const entry = state.jobs?.[job.id];
+    if (!canBrake(entry)) continue;
+    const run = entry.launched;
+    const status = agentStatus[job.id];
+    const reading = judged[run.pool];
+    const reason = reading?.reason ?? "No allowance reading";
+    const brake = run.braked;
+    if (!brake) {
+      if (!run.noBrake && status === "working" && (!reading || reading.headroom <= 0)) {
+        steps.push({ job, step: "brake", reason });
+      }
+      continue;
+    }
+    if (status === "working") {
+      if (brake.stopped || run.noBrake) steps.push({ job, step: "taken-over" });
+      else if (brake.attempts < 2) steps.push({ job, step: "retry", reason: brake.reason });
+      continue;
+    }
+    const idle = status === "idle" || status === "done";
+    if (!state.paused && !settling.has(run.pool) && (run.noBrake || (reading && reading.light !== "red"))
+      && (idle || (status === null && run.hash === job.hash))) {
+      settling.add(run.pool);
+      resumes.push({ job, step: idle ? "resume" : "restart" });
+    } else if (!brake.stopped && (idle || status === "blocked")) {
+      steps.push({ job, step: "observed-stop" });
+    }
+  }
+  return [...steps, ...resumes];
 }
 
 // --- Waiting for another job ---
@@ -153,7 +216,7 @@ export function isFinished(entry) {
   if (!launched) return false;
   if (launched.markedFinishedAt) return true;
   if (launched.pr && launched.pr.mode !== "off") return launched.pr.phase === "merged";
-  return Boolean(launched.finishedAt);
+  return Boolean(launched.finishedAt && !launched.braked);
 }
 
 export function waitFor(job, state) {
@@ -171,6 +234,7 @@ export function blockedBy(job, jobs, state, after = waitFor(job, state)) {
   if (isFinished(entry)) return null;
   const w = entry?.launched?.pr;
   const why = !entry?.launched ? "isn't launched yet"
+    : entry.launched.braked ? "is braked"
     : w && w.mode !== "off"
       ? w.phase === "needs-you" || w.phase === "closed" || w.phase === "ended" ? `stopped (${w.phase === "needs-you" ? "it needs you" : w.phase})` : "hasn't had its PR merged yet"
       : "is still working";

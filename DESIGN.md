@@ -1,8 +1,8 @@
 # Usage Queue: design
 
-Status: draft, revised 2026-11-27. Built (`herdr-app/mods/usage-queue/`): milestones 1, 2 and 3,
-and from milestone 4 Auto launch, done detection, PR reviews and cleanup after a merge. Not
-built: the [brake](#5-brake) and permission profiles.
+Status: milestones 1–4 are implemented in `herdr-app/mods/usage-queue/`. Milestone 4 includes
+Auto launch, done detection, PR reviews and cleanup, the [allowance brake](#5-brake), and
+[permission profiles](#permission-profiles).
 
 **Usage Queue** is a Herdr app mod that holds a queue of agent jobs. When one of your
 subscriptions has allowance that would otherwise reset unused, it proposes a job for it, with a
@@ -208,14 +208,12 @@ more, and comes after v1.
 
 ### 5. Brake
 
-Draft, 2026-11-27. Not built yet.
-
 While a job runs, the queue keeps reading its pool. When the pool reaches its reserve, the queue
 **interrupts** the agent: it presses the agent's stop key with `hc interrupt <terminal>`, as Esc
 would. It doesn't kill the agent. The agent stays open in its space with its conversation, and
 the worktree stays as it is. When the pool has allowance again, the queue tells the same agent
-to carry on. Readings lag, so the brake can overshoot by about one reading; the reserve absorbs
-that. This, not the cost estimate, is what makes the reserve a guarantee.
+to carry on. The brake reacts to the latest reading, so provider reporting delays can let usage
+cross the reserve before the queue sees it.
 
 **What it watches.** Every job the queue launched, by Launch or Auto, that is still running:
 `state.jobs[id].launched` has the pool, the terminal and the folder. An agent that isn't
@@ -226,10 +224,8 @@ that. This, not the cost estimate, is what makes the reserve a guarantee.
 - **At the reserve:** headroom (the tightest window's `leftPct` minus its reserve) is 0 or less.
   Launches need 5 points of headroom (`MIN_JOB_COST`), so a job that starts near the line
   isn't braked at once.
-- **Stale reading:** the reading is older than the light's staleness limit, so the queue can't
-  tell whether the reserve is safe. This only works if readings keep coming while jobs run.
-  Today the queue checks in as a consumer, so Usage Monitor keeps reading, only while a job
-  is on Auto (`readPools(hasScheduled())`), so that becomes `hasScheduled() || hasRunning()`.
+- **Stale or missing reading:** the queue can't confirm that the reserve is safe. It checks in
+  with Usage Monitor while it has scheduled jobs or jobs to watch or resume.
 - Not when you said **Let it finish** for that job (below).
 
 The pool's light can be red for your own work as much as the job's. That's the point: the
@@ -237,11 +233,11 @@ reserve is for you.
 
 **How it brakes.**
 
-1. `hc interrupt <terminal> --json`, which reports whether the agent stopped. Set
-   `launched.braked = { at, reason, pool }`. Record a `braked` history event. Notify once:
-   "Braked: <job>. Claude 5h is at its reserve (24% left). Resumes in about 2h 10m."
-2. If the agent is still `working` on the next reading, try once more. After two attempts, stop
-   trying and notify. Never kill the agent: that loses its context, and you can stop it yourself.
+1. Save the brake to `launched.braked` and record a `braked` history event. Run
+   `hc interrupt <terminal> --json` and store the result. Notify once with the pool, the reason,
+   and the next reset if known.
+2. If the first interrupt fails and the agent is still `working` on the next reading, try once
+   more. After two failed attempts, notify so you can stop the agent in its pane.
 
 **While braked.**
 
@@ -257,27 +253,29 @@ reserve is for you.
   driving it now.
 
 **Resuming.** When the pool's light leaves red, the queue sends "The allowance is back. Carry on
-where you left off." to the same agent (`hc send --if idle`). It clears `braked` and records
-`resumed`. Resumes follow the same limits as Auto launches:
+where you left off." to the same agent. It uses `hc send --if idle` for an idle terminal and
+the review sender's `done` handling for a completed turn. It clears `braked` and records
+`resumed`. Resumes share the Auto launch limits:
 
 - one per pool per settle period (10 min), and a resume counts as a launch for that limit;
 - jobs by priority;
 - none while **Pause auto** is on.
 
-If the agent is gone (its space closed, or Herdr restarted), a new agent starts in the same
-worktree. It gets the job's prompt, prefixed with "Earlier work on this job is in this worktree
-(branch <branch>): check `git status` and `git log` first." That's how `sendRound` already
-replaces a missing agent.
+If the agent is gone, a replacement starts with the saved launch command in the same worktree
+and branch. It gets the original job prompt and any PR instructions, with a reminder to check
+`git status` and `git log` first. The original job file version must still be present for a
+replacement to receive its prompt.
 
-**Let it finish.** A button in the launched job's dialog sets `launched.noBrake`. It's for when
-you'd rather spend the reserve than lose momentum. New launches on that pool still wait.
+**Let it finish.** A button in the launched job's dialog sets `launched.noBrake`. A braked run
+can resume on the next eligible Auto tick even if its pool is red. New launches on that pool
+still wait.
 
 **Code.** The decision is a pure function next to `dueToLaunch` in `queue.js`, tested from
 recorded readings:
 
 ```
-brakeSteps(jobs, state, pools, judged, agentStatus, now)
-  → [{ job, step: "brake" | "retry" | "resume" | "restart" | "taken-over", reason }]
+brakeSteps(jobs, state, judged, agentStatus, now)
+  → [{ job, step: "brake" | "retry" | "resume" | "restart" | "taken-over" | "observed-stop", reason? }]
 ```
 
 `main.js` runs the steps (`hc interrupt`, `hc send`, `space.new`) on the 60 s readings tick.
@@ -352,6 +350,20 @@ A job that runs once leaves the queue when it ends. A repeating job is re-queued
 its `repeat` period after its last run, and still waits for allowance. It keeps its saved allocation.
 `"launch": "auto"` in the file enables Auto on **Save allocation**. The estimate and
 allocation live in state.
+
+### Permission profiles
+
+The Add job form saves the profile as `permissions` in the job file. It applies to both
+Launch and Auto and stays with replacements started for a brake or review round.
+
+| Profile | Claude Code | Codex | Antigravity |
+|---|---|---|---|
+| `default` (or omitted) | Agent settings | Agent settings | Agent settings |
+| `plan` | `--permission-mode plan` | `--sandbox read-only --ask-for-approval never` | `--mode plan` |
+| `edit` | `--permission-mode acceptEdits` | `--sandbox workspace-write --ask-for-approval on-request` | `--mode accept-edits` |
+
+An agent's `permissions` catalog field can supply argv arrays for `plan` and `edit`. An
+explicit profile requires a mapping for the selected agent.
 
 ## Running a job
 
@@ -439,12 +451,12 @@ shared("usage-monitor.windows") = {
   (`claude:work`) come later, when Usage Monitor reads them.
 - **Freshness**: Usage Monitor polls only while its readout is visible, or while a consumer has
   checked in within 3 minutes: `shared("usage-monitor.consumers") = { [mod id]: ms epoch }`.
-  The queue checks in every minute while a job is on Auto, and takes itself out after. Usage
+  The queue checks in every minute while it has Auto jobs or jobs to watch or resume. Usage
   Monitor's poll still asks providers only on the bridge's adaptive schedule, so the queue never
   calls the provider APIs itself.
 - **Fallback** when nothing has been published for 5 minutes (`checkedAt`): an older Usage
-  Monitor, or none of its views open. The queue runs `bun bridge.js` itself (`--cached` unless a
-  job is on Auto) and normalises the report, as before milestone 3.
+  Monitor, or none of its views open. The queue runs `bun bridge.js` for those jobs, or uses
+  `--cached` when it only needs to display the lights.
 
 ## UI
 
@@ -471,8 +483,8 @@ A possible status-bar item is `1 needs allocation · 2 ready · 1 running`.
 
 - Every unattended run is a new agent with the permissions its job's profile gives it. Worktree
   is the default. Starting with `--dangerously-skip-permissions` (or similar) is never a default.
-- The reserve is enforced in code, at dispatch and by the brake. No job and no deadline can
-  spend below it.
+- The reserve gates launches and triggers the brake for active jobs. **Let it finish** can
+  override the running brake for an individual job.
 - Provider terms: automated use of a consumer subscription may be limited by a provider's terms.
   Check each provider's terms before turning on unattended runs for it. Usage Queue only starts
   the same CLIs you would start by hand, at your request.
@@ -505,10 +517,9 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
 3. **Contract** (built): Usage Monitor publishes `usage-monitor.windows` (+ consumers
    keepalive), so readings keep coming while its readout is hidden. The bridge stays as the
    fallback.
-4. **Auto-launch**: the auto-launch toggle and `"launch": "auto"`. This is the first unattended
-   run, so it brings done detection, the brake and permission profiles. Built: Auto, done
-   detection (agent idle, PR merged, Mark finished), PR review rounds, cleanup after a merge.
-   Not built: the [brake](#5-brake) (drafted) and permission profiles.
+4. **Auto-launch** (built). The Auto toggle and `"launch": "auto"` support unattended runs
+   with done detection, PR review rounds, cleanup after a merge, the [brake](#5-brake), and
+   [permission profiles](#permission-profiles).
 5. Job-writing prompt, cost learning per size and route, repeat and deadline,
    background and space runs.
 6. Later: global auto approval, learned `expectedUse`, daemon mode (with the move to a

@@ -15,15 +15,15 @@ import {
   agents, checking, closeOverlay, exec, focused, knownAgents, notify, openOverlay, panes, pickFolder, props, run,
   setShared, shared, spaces, terminals, theme, watchFolder,
 } from "herdr";
-import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
+import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf, PERMISSION_PROFILES } from "./catalog.js";
 import { cleanUpMerged, cleanupEntry } from "./cleanup.js";
 import { SIZES, SIZE_TEXT } from "./estimate.js";
 import { fetchPR, findPR, mergePR, myLogin, prHead, prState } from "./github.js";
-import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
+import { buildEstimatePrompt, jobTask, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
-  agentLights, allocationFor, blockedBy, canWaitFor, classify, dueToLaunch, estimatorChoices, isFinished,
-  jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, waitFor,
+  agentLights, allocationFor, blockedBy, brakeSteps, canBrake, canWaitFor, classify, dueToLaunch, estimatorChoices,
+  isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
 } from "./queue.js";
 import { judgeAll } from "./rule.js";
 import {
@@ -35,8 +35,6 @@ import { ago, duration } from "./time.js";
 const ID = "usage-queue";
 const REVISION = `${ID}.revision`;
 const POLL_MS = 60_000;
-/** After any launch on a pool, scheduled launches leave it alone this long: readings lag use. */
-const SETTLE_MS = 10 * 60_000;
 /** How often a PR (or the branch, before it has one) is checked on GitHub. */
 const PR_POLL_MS = 2 * 60_000;
 /** A PR watch with nothing happening for this long stops. */
@@ -64,13 +62,17 @@ const data = {
   loaded: false,
 };
 /** In-memory work running now, by job id. */
-const running = { estimates: new Map(), allocations: new Set(), launches: new Set(), deletions: new Set() };
+const running = {
+  estimates: new Map(), allocations: new Set(), launches: new Map(), deletions: new Set(),
+  brakes: new Map(), reviews: new Set(),
+};
 /** Each job's last estimate run, for the dialog. */
 const lastRuns = new Map();
 /** Work asked for by dialogs, run by a sidebar copy. */
 const queue = [];
 let workers = 0;
-let readingSince = 0;
+let reading = false;
+let dispatching = false;
 /** The add form as last typed: { title, prompt, repo, agents, priority }, or null. undefined
  *  until read from draft.json. */
 let draft = undefined;
@@ -96,18 +98,17 @@ async function reloadJobs() {
 }
 
 async function refreshReadings() {
-  if (Date.now() - readingSince < BUSY_MS) return;
-  readingSince = Date.now();
+  if (reading) return;
+  reading = true;
   try {
     data.catalog = await loadCatalog();
-    // Scheduled jobs need fresh readings even when Usage Monitor's readout is hidden.
-    data.pools = await readPools(hasScheduled());
+    data.pools = await readPools(hasScheduled() || hasRunning());
     data.readAt = Date.now();
     data.readError = "";
   } catch (e) {
     data.readError = String(e?.message ?? e);
   } finally {
-    readingSince = 0;
+    reading = false;
   }
   data.judged = judgeAll(data.pools);
   changed();
@@ -115,11 +116,28 @@ async function refreshReadings() {
 
 /** Queued jobs set to launch by themselves when there's allowance. */
 const hasScheduled = () => classify(data.jobs, data.state).queued.some((job) => allocationFor(job, data.state)?.auto);
+const hasRunning = () => data.jobs.some((job) => {
+  const entry = jobState(job.id);
+  const launched = entry.launched;
+  if (launched?.pool && launched.pr && !PR_DONE.has(launched.pr.phase)) return true;
+  if (!canBrake(entry) || (launched.noBrake && !launched.braked)) return false;
+  const { status } = jobAgent(launched);
+  return launched.braked || status === "working" || status === "blocked"
+    || Date.now() - launched.at < POLL_MS;
+});
 
-/** Launches the scheduled jobs whose allowance is back (see dueToLaunch). */
-async function launchScheduled() {
-  for (const job of dueToLaunch(data.jobs, data.state, data.catalog, data.pools, data.judged, Date.now(), SETTLE_MS)) {
-    await doLaunch({ id: job.id, hash: job.hash, auto: true });
+/** Brakes active jobs first, then gives jobs resuming and new Auto launches the shared pool slots. */
+async function dispatch() {
+  if (dispatching) return;
+  dispatching = true;
+  try {
+    await refreshReadings();
+    await applyBrakes();
+    for (const job of dueToLaunch(data.jobs, data.state, data.catalog, data.pools, data.judged)) {
+      await doLaunch({ id: job.id, hash: job.hash, auto: true });
+    }
+  } finally {
+    dispatching = false;
   }
 }
 
@@ -128,6 +146,7 @@ const jobState = (id) => data.state.jobs?.[id] ?? {};
 const currentVersion = (job, entry) => entry?.hash === job.hash ? entry : null;
 const lights = () => agentLights(data.catalog, data.pools, data.judged);
 const lightLines = () => lights().map((l) => `${l.agent.id}: ${l.judgement.light} (${l.judgement.reason})`);
+const jobRouteStatus = (job, route) => routeStatus(data.catalog, route, data.pools, data.judged, job.permissions);
 
 /** The light to show beside a job: its saved or proposed route's, else its agents' best. */
 function jobLight(job) {
@@ -135,7 +154,7 @@ function jobLight(job) {
   const route = allocationFor(job, data.state)?.route
     ?? (currentVersion(job, s.estimate) ? s.proposal : null)
     ?? pinnedRoute(data.catalog, job);
-  if (route) return routeStatus(data.catalog, route, data.pools, data.judged).judgement;
+  if (route) return jobRouteStatus(job, route).judgement;
   const own = lights().filter((l) => job.agents.includes(l.agent.id)).map((l) => l.judgement);
   const rank = { green: 2, yellow: 1, red: 0 };
   return own.sort((a, b) => rank[b.light] - rank[a.light])[0] ?? { light: "red", reason: "None of this job's agents has a reading" };
@@ -160,7 +179,7 @@ async function doEstimate({ id, hash, agentId, modelId }) {
     changed();
     const { estimate, reply, log } = await runEstimate({ job, catalog: data.catalog, agent, model: model.id, effort, prompt });
     lastRuns.set(id, { hash, by, prompt, reply, log });
-    const proposal = proposeRoute(data.catalog, estimate, data.pools, data.judged);
+    const proposal = proposeRoute(data.catalog, estimate, data.pools, data.judged, job.permissions);
     data.state = await updateState((s) => {
       s.jobs[id] = {
         ...(s.jobs[id] ?? {}),
@@ -187,17 +206,18 @@ async function doLaunch({ id, hash, auto = false }) {
   const wait = blockedBy(job, data.jobs, data.state);
   if (wait) return notify({ title: `${job.title}: waiting`, body: `It waits for ${wait.job.title}, which ${wait.why}.`, level: "warning" });
   const { route } = allocation;
-  const { agent, judgement, pool } = routeStatus(data.catalog, route, data.pools, data.judged);
+  const { agent, judgement, pool } = jobRouteStatus(job, route);
   if (!agent) return notify({ title: "Can't launch", body: `Unknown agent ${route.agent}.`, level: "error" });
   if (judgement.light === "red") {
     return notify({ title: `${job.title}: not yet`, body: judgement.reason, level: "warning" });
   }
-  running.launches.add(id);
+  if (auto && (settlingPools(data.state).has(pool.id) || poolBusy(pool.id))) return;
+  running.launches.set(id, pool.id);
   changed();
   try {
     const prMode = allocation.pr ?? job.pr ?? "off";
     const launched = await launchJob({ job, agent, model: route.model, effort: route.effort, pr: prMode });
-    const entry = { at: Date.now(), hash: job.hash, route, pool: pool?.id ?? null, light: judgement.light, ...launched };
+    const entry = { at: Date.now(), hash: job.hash, route, pool: pool.id, light: judgement.light, permissions: job.permissions, ...launched };
     if (prMode !== "off") {
       entry.pr = { mode: prMode, phase: "working", number: null, url: "", rounds: 0, handled: [], sentAt: 0, terminal: null, changedAt: Date.now() };
     }
@@ -213,6 +233,163 @@ async function doLaunch({ id, hash, auto = false }) {
     running.launches.delete(id);
     changed();
   }
+}
+
+// --- After launch: the allowance brake ---
+
+const within = (folder) => (cwd) => !!cwd && (cwd === folder || cwd.startsWith(`${folder}/`));
+const poolBusy = (id) => [...running.launches.values(), ...running.brakes.values()].includes(id);
+
+/** Find the job's own agent. Keep the terminal identity once known, and leave ambiguous panes alone. */
+function jobAgent(launched) {
+  const inFolder = within(launched.folder);
+  const local = new Map(spaces().filter((sp) => !sp.machine).map((sp) => [sp.id, sp.folder]));
+  const all = panes();
+  const paneById = new Map(all.map((p) => [p.pane, p]));
+  const candidates = agents().filter((a) => local.has(a.space) &&
+    (local.get(a.space) === launched.folder || inFolder(paneById.get(a.pane)?.cwd)));
+  const terminal = launched.terminal ?? launched.pr?.terminal;
+  const agent = terminal ? candidates.find((a) => a.address === terminal) : candidates.length === 1 ? candidates[0] : null;
+  if (agent) return { agent, status: agent.status };
+  const starting = all.some((p) => p.terminal && p.program?.agent && inFolder(p.cwd) && !p.status);
+  return { agent: null, status: candidates.length || starting ? undefined : null };
+}
+
+async function patchLaunch(id, launched, change) {
+  data.state = await updateState((s) => {
+    const current = s.jobs[id]?.launched;
+    if (current && current.at === launched.at && current.branch === launched.branch) change(current);
+  });
+  changed();
+}
+
+const hcError = (result) => {
+  try {
+    const message = JSON.parse(result.stderr)?.error?.message;
+    if (message) return message;
+  } catch {}
+  return (result.stderr || result.stdout).trim().split("\n").at(-1) || `exit ${result.code}`;
+};
+
+async function interruptJob(job, launched, agent, step, reason) {
+  const initial = step === "brake";
+  const braked = initial ? { at: Date.now(), reason, pool: launched.pool, attempts: 1 }
+    : { ...launched.braked, attempts: launched.braked.attempts + 1 };
+  // Persist the brake before interrupting: the idle notification can arrive during hc interrupt.
+  await patchLaunch(job.id, launched, (run) => { run.braked = braked; run.terminal = agent.address; });
+  if (initial) await record({ type: "braked", job: job.id, ...braked });
+  let outcome = "stopped", error;
+  const current = jobState(job.id).launched;
+  const live = jobAgent(launched);
+  if (live.status === "working" && live.agent.address === agent.address && current?.at === launched.at &&
+    current.braked && !current.noBrake && canBrake(jobState(job.id))) {
+    try {
+      const result = await exec("hc", ["interrupt", agent.address, "--json"], { timeout: 15_000 });
+      if (result.code !== 0) throw new Error(hcError(result));
+      outcome = JSON.parse(result.stdout).outcome;
+      if (outcome !== "stopped" && outcome !== "exited") error = `hc interrupt reported ${outcome}.`;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+  }
+  const stopped = !error && outcome === "stopped";
+  await patchLaunch(job.id, launched, (run) => {
+    if (run.braked) Object.assign(run.braked, { stopped, error });
+  });
+  if (initial) {
+    const until = whenOpen(data.judged[launched.pool] ?? {});
+    const pool = data.pools.find((p) => p.id === launched.pool)?.name ?? launched.pool;
+    notify({ title: `${error ? "Braking" : "Braked"}: ${job.title}`,
+      body: `${pool} · ${reason}.${until ? ` Resumes when allowance is back (reset ${until}).` : ""}`, level: "warning" });
+  }
+  if (error && braked.attempts >= 2) {
+    await record({ type: "brake-failed", job: job.id, error });
+    notify({ title: `Couldn't stop ${job.title}`, body: `${error} You can stop the agent in its pane.`, level: "error" });
+  }
+}
+
+/** A replacement uses the exact argv of the last launch, including its permission flags. */
+function restartAgent(launched, task) {
+  const route = launched.route;
+  const argv = launched.argv ?? launchArgv(agentOf(data.catalog, route.agent), route.model, route.effort, launched.permissions);
+  run("space.new", { folder: launched.folder, argv, focus: false, task });
+}
+
+async function resumeJob(job, launched, agent) {
+  const restart = !agent;
+  if (restart) {
+    const branch = await gitIn(launched.folder, ["branch", "--show-current"]);
+    if (!branch.ok || branch.out !== launched.branch) throw new Error("The job's worktree or branch is no longer available.");
+  }
+  const entry = jobState(job.id);
+  const live = jobAgent(launched);
+  const reading = data.judged[launched.pool];
+  if (!entry.launched?.braked || entry.launched.at !== launched.at || !canBrake(entry) || data.state.paused ||
+    (!entry.launched.noBrake && (!reading || reading.light === "red"))) return;
+  if (restart) {
+    if (live.status !== null || jobById(job.id)?.hash !== launched.hash) return;
+    const task = `Earlier work on this job is in this worktree (branch ${launched.branch}): check git status and git log first.\n\n`;
+    restartAgent(launched, task + jobTask(job, launched, launched.pr?.mode ?? "off"));
+  } else {
+    if (!live.agent || live.agent.address !== agent.address || !["idle", "done"].includes(live.status)) return;
+    const message = entry.launched.noBrake ? "Carry on where you left off." : "The allowance is back. Carry on where you left off.";
+    const result = await exec("hc", sendArgs(agent.address, live.status, message), { timeout: 75_000 });
+    if (result.code !== 0) throw new Error(hcError(result));
+  }
+  const now = Date.now();
+  await patchLaunch(job.id, launched, (run) => {
+    delete run.braked;
+    delete run.finishedAt;
+    run.resumedAt = now;
+    run.worked = !restart;
+    if (restart) delete run.terminal;
+    if (run.pr) Object.assign(run.pr, { terminal: restart ? null : agent.address, changedAt: now, idleNoted: false, worked: false });
+  });
+  await record({ type: "resumed", job: job.id, pool: launched.pool, restarted: restart });
+}
+
+async function applyBrakes() {
+  const statuses = Object.fromEntries(data.jobs.filter((job) => canBrake(jobState(job.id)))
+    .map((job) => [job.id, jobAgent(jobState(job.id).launched).status]));
+  for (const { job } of brakeSteps(data.jobs, data.state, data.judged, statuses)) {
+    const launched = jobState(job.id).launched;
+    if (!launched || running.reviews.has(job.id) || running.deletions.has(job.id) || running.allocations.has(job.id)) continue;
+    const { agent, status } = jobAgent(launched);
+    const [action] = brakeSteps([job], data.state, data.judged, { [job.id]: status });
+    if (!action) continue;
+    const { step, reason } = action;
+    if ((step === "resume" || step === "restart") && poolBusy(launched.pool)) continue;
+    running.brakes.set(job.id, launched.pool);
+    try {
+      if (step === "brake" || step === "retry") await interruptJob(job, launched, agent, step, reason);
+      else if (step === "resume" || step === "restart") await resumeJob(job, launched, agent);
+      else if (step === "observed-stop") await patchLaunch(job.id, launched, (run) => {
+        if (run.braked) run.braked.stopped = true;
+      });
+      else if (step === "taken-over") {
+        await patchLaunch(job.id, launched, (run) => {
+          delete run.braked;
+          delete run.finishedAt;
+          run.takenOver = true;
+          if (run.pr) run.pr.changedAt = Date.now();
+        });
+        await record({ type: "taken-over", job: job.id, pool: launched.pool });
+      }
+    } catch (e) {
+      const error = String(e?.message ?? e);
+      if (error !== launched.braked?.error) {
+        await patchLaunch(job.id, launched, (run) => { if (run.braked) run.braked.error = error; });
+        notify({ title: `Couldn't ${step} ${job.title}`, body: error, level: "error" });
+      }
+    } finally {
+      running.brakes.delete(job.id);
+    }
+  }
+}
+
+async function letFinish(job, launched) {
+  await patchLaunch(job.id, launched, (run) => { run.noBrake = true; });
+  await record({ type: "no-brake", job: job.id });
 }
 
 // --- After launch: the PR and its review rounds ---
@@ -236,29 +413,19 @@ function agentSpace(job) {
     || sp.tabs?.some((tab) => all.some((p) => p.tab === tab.id && p.cwd?.startsWith(folder)))) ?? null;
 }
 
-/** The agent working in a launched job's worktree: its terminal address, or null. */
-function agentIn(folder) {
-  const cwd = new Map(panes().map((p) => [p.pane, p.cwd ?? ""]));
-  return agents().find((a) => (cwd.get(a.pane) ?? "").startsWith(folder))?.address ?? null;
-}
+const canSendRound = (launched) => launched && !launched.braked &&
+  (!launched.resumedAt || Date.now() - launched.resumedAt >= 30_000) &&
+  (launched.noBrake || !launched.pool || (data.judged[launched.pool] && data.judged[launched.pool].light !== "red"));
 
 /** Hands a review round to the job's agent, or to a new one in its worktree if it's gone.
  *  Returns "" when it went, else why it didn't. */
-async function sendRound(job, launched, message) {
-  const terminal = launched.pr.terminal;
-  const agent = terminal ? agents().find((a) => a.address === terminal) : null;
+async function sendRound(launched, agent, message) {
   if (agent) {
-    const r = await exec("hc", sendArgs(terminal, agent.status, message), { timeout: 75_000 });
+    const r = await exec("hc", sendArgs(agent.address, agent.status, message), { timeout: 75_000 });
     if (r.code === 0) return "";
-    return `hc send to ${terminal} (${agent.status ?? "no status"}) failed: ${(r.stderr || r.stdout).trim().split("\n").at(-1) || `exit ${r.code}`}`;
+    return `hc send to ${agent.address} (${agent.status}) failed: ${hcError(r)}`;
   }
-  const route = launched.route;
-  const entry = agentOf(data.catalog, route.agent);
-  if (!entry) return `Unknown agent ${route.agent}, so there's no one to start in ${launched.folder}.`;
-  run("space.new", {
-    folder: launched.folder, argv: launchArgv(entry, route.model, route.effort), focus: false,
-    task: `You're continuing work on this branch (${launched.branch}), which has an open pull request.\n\n${message}`,
-  });
+  restartAgent(launched, `You're continuing work on this branch (${launched.branch}), which has an open pull request.\n\n${message}`);
   return "";
 }
 
@@ -266,24 +433,25 @@ async function sendRound(job, launched, message) {
 async function watchPRs() {
   const now = Date.now();
   for (const job of data.jobs) {
+    if (running.brakes.has(job.id) || running.reviews.has(job.id)) continue;
     const launched = jobState(job.id).launched;
     if (launched && !launched.pr) await trackFinish(job.id, launched);
     const w = launched?.pr;
     if (w && PR_LATE.has(w.phase)) await lateCheck(job, launched, w, now);
     if (!w || PR_DONE.has(w.phase)) continue;
     const id = job.id;
-    const terminal = (w.terminal && agents().some((a) => a.address === w.terminal)) ? w.terminal : agentIn(launched.folder);
-    const agent = terminal ? agents().find((a) => a.address === terminal) : null;
-    if (terminal !== w.terminal) await patchWatch(id, { terminal });
-    if (agent?.status === "working" && !w.worked) await patchWatch(id, { worked: true });
+    const { agent, status } = jobAgent(launched);
+    if (agent && agent.address !== w.terminal) await patchWatch(id, { terminal: agent.address });
+    if (status === "working" && !w.worked) await patchWatch(id, { worked: true });
     if (now - (polledAt.get(id) ?? 0) < PR_POLL_MS) continue;
     polledAt.set(id, now);
-    if (now - (w.changedAt ?? launched.at) > WATCH_FOR_MS) {
+    if (!jobState(id).launched?.braked && now - (w.changedAt ?? launched.at) > WATCH_FOR_MS) {
       await patchWatch(id, { phase: "ended" });
       notify({ title: `Stopped watching: ${job.title}`, body: "Nothing happened for a day.", level: "info" });
       continue;
     }
-    const idle = !agent || agent.status === "idle" || agent.status === "done";
+    const idle = status === null || status === "idle" || status === "done";
+    let sending = false;
     try {
       if (!w.number) {
         const found = await findPR(launched.folder, launched.branch);
@@ -291,7 +459,7 @@ async function watchPRs() {
           await patchWatch(id, { number: found.number, url: found.url, phase: "in-review", changedAt: now });
           await record({ type: "pr-opened", job: id, number: found.number, url: found.url });
           notify({ title: `PR #${found.number} opened: ${job.title}`, body: "Watching it for reviews.", level: "info" });
-        } else if (w.worked && agent && idle && !w.idleNoted) {
+        } else if (w.worked && agent && idle && !w.idleNoted && !running.brakes.has(id) && !jobState(id).launched?.braked) {
           await patchWatch(id, { idleNoted: true });
           notify({ title: `${job.title}: no PR yet`, body: "The agent stopped without opening one. It may be asking you something.", level: "warning" });
         }
@@ -300,7 +468,10 @@ async function watchPRs() {
       const pr = await fetchPR(launched.folder, w.number);
       // GitHub answered: an earlier failure to reach it is over (a failed send clears on its own).
       if (w.error && !w.sendFailed) await patchWatch(id, { error: undefined });
-      const step = reviewStep(pr, w, await myLogin(launched.folder), idle);
+      const me = await myLogin(launched.folder);
+      const current = jobState(id).launched;
+      if (!current || current.at !== launched.at || !current.pr || PR_DONE.has(current.pr.phase)) continue;
+      const step = reviewStep(pr, current.pr, me, idle && canSendRound(current), Boolean(current.braked || running.brakes.has(id)));
       if (step.action === "merged" || step.action === "closed") {
         await patchWatch(id, { phase: step.action, changedAt: now });
         await record({ type: `pr-${step.action}`, job: id, number: w.number });
@@ -327,14 +498,20 @@ async function watchPRs() {
         await record({ type: "pr-needs-you", job: id, number: w.number });
         notify({ title: `PR #${w.number} needs you: ${job.title}`, body: `${MAX_ROUNDS} review rounds are done and there are new comments.`, level: "warning" });
       } else if (step.action === "address") {
+        const live = jobAgent(current);
+        if (running.reviews.has(id) || running.brakes.has(id) || !canSendRound(current) ||
+          (live.status !== null && live.status !== "idle" && live.status !== "done")) continue;
         const round = (w.rounds ?? 0) + 1;
         const message = roundMessage({ round, number: w.number, url: w.url, branch: launched.branch, items: step.items, mode: w.mode });
-        const failed = await sendRound(job, launched, message);
+        running.reviews.add(id);
+        sending = true;
+        const failed = await sendRound(current, live.agent, message);
         if (!failed) {
           await patchWatch(id, {
             rounds: round, sentAt: now, changedAt: now, handled: [...(w.handled ?? []), ...step.items.map((x) => x.id)],
-            error: undefined, sendFailed: undefined,
+            terminal: live.agent?.address ?? null, error: undefined, sendFailed: undefined,
           });
+          if (!live.agent) await patchLaunch(id, current, (run) => { delete run.terminal; });
           await record({ type: "pr-round", job: id, number: w.number, round, comments: step.items.length });
           notify({ title: `Review round ${round}/${MAX_ROUNDS}: ${job.title}`, body: `${step.items.length} comment(s) sent to the agent.`, level: "info" });
         } else {
@@ -348,6 +525,8 @@ async function watchPRs() {
       }
     } catch (e) {
       await patchWatch(id, { error: String(e?.message ?? e) });
+    } finally {
+      if (sending) running.reviews.delete(id);
     }
   }
 }
@@ -398,8 +577,6 @@ async function queueCleanup(job, launched, number) {
     // Not queued: runCleanups queues merged jobs it finds without one.
   }
 }
-
-const within = (folder) => (cwd) => !!cwd && (cwd === folder || cwd.startsWith(`${folder}/`));
 
 /** What's open in a worktree: { busy } says why it can't be closed now ("" if it can), and
  *  `spaces` are the job's own spaces there, safe to close. */
@@ -516,19 +693,20 @@ async function markFinished(job, on) {
 /** A launched job without a PR is finished once its agent has worked and stopped (or is gone):
  *  that's what a job waiting on it waits for. */
 async function trackFinish(id, launched) {
-  if (launched.finishedAt || Date.now() - launched.at > WATCH_FOR_MS) return;
-  const terminal = (launched.terminal && agents().some((a) => a.address === launched.terminal))
-    ? launched.terminal : agentIn(launched.folder);
-  const agent = terminal ? agents().find((a) => a.address === terminal) : null;
+  const activeAt = launched.resumedAt ?? launched.at;
+  if (launched.braked || launched.finishedAt || Date.now() - activeAt > WATCH_FOR_MS) return;
+  const { agent, status } = jobAgent(launched);
   const changes = {};
-  if (terminal && terminal !== launched.terminal) changes.terminal = terminal;
-  if (agent?.status === "working" && !launched.worked) changes.worked = true;
+  if (agent && agent.address !== launched.terminal) changes.terminal = agent.address;
+  if ((status === "working" || status === "done") && !launched.worked) changes.worked = true;
   const worked = launched.worked || changes.worked;
-  if (worked && (!agent || agent.status === "idle" || agent.status === "done")) changes.finishedAt = Date.now();
+  if (worked && (status === null || status === "idle" || status === "done") &&
+    (!launched.resumedAt || Date.now() - launched.resumedAt >= 30_000)) changes.finishedAt = Date.now();
   if (!Object.keys(changes).length) return;
-  data.state = await updateState((s) => { if (s.jobs[id]?.launched) Object.assign(s.jobs[id].launched, changes); });
-  if (changes.finishedAt) await record({ type: "finished", job: id });
-  changed();
+  await patchLaunch(id, launched, (run) => {
+    if (!run.braked && run.resumedAt === launched.resumedAt) Object.assign(run, changes);
+  });
+  if (changes.finishedAt && changes.finishedAt === jobState(id).launched?.finishedAt) await record({ type: "finished", job: id });
 }
 
 /** A launched job's PR status, for its row: "PR #12 · round 1/3", "Merged", … */
@@ -613,17 +791,34 @@ function requestLaunch(job, cx, auto = false) {
 
 /** Starts the job now if eligible, or schedules it. Returns false if this view runs it. */
 function autoLaunch(job, cx) {
-  if (!data.state.paused && jobLight(job).light !== "red" && !blockedBy(job, data.jobs, data.state)) return requestLaunch(job, cx);
-  cx.spawn(async () => setAuto(job, true));
+  cx.spawn(async (cx) => {
+    await setAuto(job, true);
+    if (!dispatching && dueToLaunch(data.jobs, data.state, data.catalog, data.pools, data.judged).includes(job)) {
+      requestLaunch(job, cx, true);
+    }
+  });
   return true;
 }
 
 /** When a red light should change, for people: "in 2h 10m", or "" when unknown. */
 const whenOpen = (j) => (j.changesAt && j.changesAt > Date.now() ? `in ${duration(j.changesAt - Date.now())}` : "");
 
+function brakeStatus(launched) {
+  const { braked, noBrake, pool } = launched;
+  if (!braked) return launched.takenOver ? "Taken over" : noBrake ? "Let it finish" : "";
+  if (braked.error && braked.attempts >= 2 && !braked.stopped) return "Braked · couldn't stop";
+  if (data.state.paused) return "Braked · Auto paused";
+  const reading = data.judged[pool];
+  if (noBrake || (reading && reading.light !== "red")) return "Braked · waiting to resume";
+  if (!reading || reading.reading === "missing") return "Braked · no reading";
+  if (reading.reading === "stale") return "Braked · stale reading";
+  const when = whenOpen(reading);
+  return when ? `Braked · resumes ${when}` : "Braked · at reserve";
+}
+
 async function clearAllocation(job) {
   const id = job.id;
-  if (running.launches.has(id) || running.allocations.has(id) || running.deletions.has(id)) return;
+  if (running.launches.has(id) || running.brakes.has(id) || running.allocations.has(id) || running.deletions.has(id)) return;
   running.allocations.add(id);
   changed();
   try {
@@ -640,7 +835,7 @@ async function clearAllocation(job) {
 }
 
 async function removeJob(id) {
-  if (running.deletions.has(id) || running.allocations.has(id) || running.launches.has(id)) return;
+  if (running.deletions.has(id) || running.allocations.has(id) || running.launches.has(id) || running.brakes.has(id)) return;
   running.deletions.add(id);
   try {
     await deleteJob(id);
@@ -737,10 +932,7 @@ export default class UsageQueue extends View {
       await refreshReadings();
       cx.notify();
     });
-    cx.timer.every(POLL_MS, (cx) => cx.spawn(async () => {
-      await refreshReadings();
-      await launchScheduled();
-    }));
+    cx.timer.every(POLL_MS, (cx) => cx.spawn(dispatch));
     // Launched jobs' PRs: each is checked on GitHub every 2 minutes (see watchPRs).
     // Then merged jobs' worktrees and branches go (see runCleanups).
     cx.timer.every(30_000, (cx) => cx.spawn(async () => {
@@ -827,13 +1019,16 @@ export default class UsageQueue extends View {
     } else {
       const w = s.launched?.pr;
       const finished = isFinished(s);
-      const tone = !w ? t.dim : w.phase === "merged" || w.phase === "approved" ? LIGHT.green
+      const brake = finished ? "" : brakeStatus(s.launched);
+      const error = s.launched.braked?.error ?? w?.error;
+      const tone = s.launched.braked && !finished ? LIGHT.yellow
+        : !w ? t.dim : w.phase === "merged" || w.phase === "approved" ? LIGHT.green
         : w.phase === "needs-you" ? LIGHT.yellow : t.muted;
       right = h_flex().min_w(0).gap(4).items_center()
-        .when(Boolean(w?.error), (el) => el.child(div().id(`warn-${job.id}`).text_size(11).text_color(LIGHT.yellow)
-          .tooltip(w.error).child("⚠")))
+        .when(Boolean(error), (el) => el.child(div().id(`warn-${job.id}`).text_size(11).text_color(LIGHT.yellow)
+          .tooltip(error).child("⚠")))
         .child(div().min_w(0).truncate().text_size(11).text_color(tone)
-          .child(w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : ""))
+          .child(brake || (w ? prStatus(w) : s.launched?.at ? ago(s.launched.at) : "")))
         .when(finished, (el) => el.child(rowButton(t, `delete-${job.id}`, "Delete", true, `Delete ${job.title} from the queue`,
           (cx) => cx.spawn(async () => {
             const current = jobState(job.id);
@@ -843,7 +1038,8 @@ export default class UsageQueue extends View {
           })).text_color(t.ansi1)));
     }
     const tip = kind === "launched"
-      ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}${s.launched.pr?.error ? `\n⚠ ${s.launched.pr.error}` : ""}`
+      ? [routeText(s.launched.route), `${s.launched.branch} from ${baseText(s.launched.base)}`,
+        !isFinished(s) ? brakeStatus(s.launched) : "", s.launched.braked?.reason, s.launched.pr?.error].filter(Boolean).join("\n")
       : [job.title, allocation ? routeText(allocation.route) : "Needs allocation", `${LIGHT_WORD[j.light]}: ${j.reason}`, waitText]
         .filter(Boolean).join("\n");
     return h_flex().id(`job-${kind}-${job.id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(7)
@@ -896,10 +1092,11 @@ export default class UsageQueue extends View {
     return v_flex().id("root")
       .size_full().min_h(0).bg(t.chrome).border_t(1).border_color(t.border).text_size(13)
       .child(header)
-      .when(hasScheduled(), (el) => el.child(h_flex().px(16).pb(4).justify_end().child(
+      .when(hasScheduled() || lists.launched.some((job) => jobState(job.id).launched.braked && canBrake(jobState(job.id))),
+        (el) => el.child(h_flex().px(16).pb(4).justify_end().child(
           div().id("pause").text_size(11).cursor_pointer()
             .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
-            .tooltip(data.state.paused ? "Scheduled launches are paused. Click to resume." : "Pause scheduled launches")
+            .tooltip(data.state.paused ? "Auto launches and resumes are paused. Click to continue." : "Pause Auto launches and resumes")
             .on_click((_e, cx) => cx.spawn(async () => setPaused(!data.state.paused)))
             .child(data.state.paused ? "Paused · resume" : "Pause auto"))))
       .child(this.lightsRow(t))
@@ -942,7 +1139,8 @@ export default class UsageQueue extends View {
     const route = this.route
       ?? (currentVersion(job, s.estimate) ? s.proposal : null)
       ?? pinnedRoute(data.catalog, job)
-      ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged);
+      ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged, job.permissions)
+      ?? routeOptions(data.catalog, job, null)[0];
     return route && { ...route, size: this.size ?? route.size ?? "m" };
   }
 
@@ -966,8 +1164,8 @@ export default class UsageQueue extends View {
       running.allocations.delete(job.id);
       changed();
     }
-    const launchNow = action === "launch" || (action === "auto" && !data.state.paused &&
-      !blockedBy(job, data.jobs, data.state) && jobLight(job).light !== "red");
+    const launchNow = action === "launch" || (action === "auto" && !dispatching &&
+      dueToLaunch(data.jobs, data.state, data.catalog, data.pools, data.judged).includes(job));
     if (!launchNow || requestLaunch(job, cx, action === "auto")) closeOverlay(overlay);
   }
 
@@ -1051,7 +1249,7 @@ export default class UsageQueue extends View {
     const els = [this.section(t, "Allocation")];
     els.push(v_flex().gap(4).children(options.map((r) => {
       const selected = route?.agent === r.agent;
-      const { judgement: j } = routeStatus(data.catalog, selected ? route : r, data.pools, data.judged);
+      const { judgement: j } = jobRouteStatus(job, selected ? route : r);
       return v_flex().id(`route-${r.agent}`).px(10).py(6).gap(2).rounded(8).border_1()
         .border_color(selected ? t.accent : t.border).bg(selected ? t.selected : "#00000000").cursor_pointer()
         .on_click((_e, cx) => { if (!selected) { this.route = { ...r }; cx.notify(); } })
@@ -1095,7 +1293,7 @@ export default class UsageQueue extends View {
     const allocation = allocationFor(job, data.state);
     const launched = allocation && currentVersion(job, s.launched);
     const route = allocation?.route ?? this.currentRoute(job);
-    const status = route ? routeStatus(data.catalog, route, data.pools, data.judged).judgement : null;
+    const status = route ? jobRouteStatus(job, route).judgement : null;
     const after = allocation ? waitFor(job, data.state) : this.draftAfter(job);
     const wait = blockedBy(job, data.jobs, data.state, after);
     const pr = allocation?.pr ?? this.pr ?? job.pr;
@@ -1107,6 +1305,8 @@ export default class UsageQueue extends View {
       div().pt(4).text_size(11.5).text_color(t.dim)
         .child(`${job.repo} · ${job.agents.join(", ")} · priority ${job.priority} · ${job.id}.json`),
       div().pt(2).text_size(11.5).text_color(t.dim).child(`Starts from ${BASE_TEXT(job.base)}, taken when it launches.`),
+      div().pt(2).text_size(11.5).text_color(t.dim)
+        .child(`Permissions · ${PERMISSION_PROFILES[launched ? launched.permissions ?? "default" : job.permissions].label}`),
       div().id("prompt").mt(10).p(10).max_h(150).overflow_y_scrollbar().rounded(8).border_1().border_color(t.border)
         .bg(t.background).text_size(12).text_color(t.foreground).child(job.prompt),
     ];
@@ -1130,6 +1330,16 @@ export default class UsageQueue extends View {
         body.push(div().pt(4).text_size(12).text_color(t.muted)
           .child(`${ago(s.launched.at)} on ${s.launched.branch}, from ${baseText(s.launched.base)}, in ${s.launched.folder}`));
         if (s.launched.base?.note) body.push(div().pt(4).text_size(12).text_color(LIGHT.yellow).child(s.launched.base.note));
+        if (canBrake(s) || (!isFinished(s) && launched.takenOver)) {
+          body.push(h_flex().pt(10).gap(8).items_center()
+            .child(div().flex_1().text_size(12).text_color(launched.braked ? LIGHT.yellow : t.dim)
+              .child(brakeStatus(launched) || "Allowance brake is on."))
+            .when(!launched.noBrake && !launched.takenOver, (el) => el.child(chip(t, "let-finish", "Let it finish", false,
+              (_e, cx) => cx.spawn(async () => { await letFinish(job, launched); cx.notify(); }),
+              "Let this run spend its pool's reserve."))));
+          if (launched.braked) body.push(div().pt(4).text_size(11.5).text_color(t.dim)
+            .child(launched.braked.error ?? launched.braked.reason));
+        }
         const w = s.launched.pr;
         if (w) {
           body.push(h_flex().pt(10).gap(8).items_center()
@@ -1181,7 +1391,7 @@ export default class UsageQueue extends View {
     }
 
     const launching = running.launches.has(job.id);
-    const busy = launching || running.allocations.has(job.id) || running.deletions.has(job.id);
+    const busy = launching || running.brakes.has(job.id) || running.allocations.has(job.id) || running.deletions.has(job.id);
     const footer = h_flex().pt(18).gap(8).items_center()
       .child(button(t, "delete", "Delete job", "danger", (_e, cx) => cx.spawn(async () => {
         await removeJob(job.id);
@@ -1275,6 +1485,7 @@ export default class UsageQueue extends View {
     this.agents = new Set(d?.agents ?? ["claude", "codex"]);
     this.priority = d?.priority ?? 2;
     this.prMode = d?.pr ?? "off";
+    this.permissions = d?.permissions ?? "default";
     this.afterId = d?.after ?? null;
     this.title.set_value(d?.title ?? "");
     this.prompt.set_value(d?.prompt ?? "");
@@ -1285,7 +1496,7 @@ export default class UsageQueue extends View {
     if (!this.agents) return;
     const d = {
       title: this.title.value(), prompt: this.prompt.value(), repo: this.repo,
-      agents: [...this.agents], priority: this.priority, pr: this.prMode, after: this.afterId, at: Date.now(),
+      agents: [...this.agents], priority: this.priority, pr: this.prMode, permissions: this.permissions, after: this.afterId, at: Date.now(),
     };
     draft = d.title.trim() || d.prompt.trim() ? d : null;
     const seq = ++this.draftSeq;
@@ -1314,7 +1525,10 @@ export default class UsageQueue extends View {
       if (!can) return;
       try {
         const id = jobId(title);
-        await writeNewJob(id, jobText({ title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority, pr: this.prMode, after: afterId }));
+        await writeNewJob(id, jobText({
+          title, prompt, repo: this.repo, agents: [...this.agents], priority: this.priority,
+          pr: this.prMode, permissions: this.permissions, after: afterId,
+        }));
         await record({ type: "added", job: id });
         draft = null;
         this.draftSeq++;
@@ -1360,6 +1574,10 @@ export default class UsageQueue extends View {
       .child(label("Priority"))
       .child(h_flex().gap(6).children([1, 2, 3].map((n) => chip(t, `prio-${n}`, ["", "1 · high", "2 · normal", "3 · low"][n],
         this.priority === n, (_e, cx) => { this.priority = n; this.keepDraft(cx); cx.notify(); }))))
+      .child(label("Permissions"))
+      .child(h_flex().gap(6).children(Object.entries(PERMISSION_PROFILES).map(([profile, info]) => chip(t,
+        `permissions-${profile}`, info.label, this.permissions === profile,
+        (_e, cx) => { this.permissions = profile; this.keepDraft(cx); cx.notify(); }, info.description))))
       .child(label("When it's done"))
       .child(h_flex().gap(6).children(["off", "review", "merge"].map((m) => chip(t, `addpr-${m}`, PR_MODE_TEXT[m],
         this.prMode === m, (_e, cx) => { this.prMode = m; this.keepDraft(cx); cx.notify(); },

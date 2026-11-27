@@ -148,9 +148,9 @@ export function checkIn(consumers, id, wanted, now = Date.now()) {
  */
 export function judgePool(pool, now = Date.now(), reserve = RESERVE) {
   const base = { id: pool.id, headroom: 0, waste: 0, urgency: 0, binding: null, changesAt: null };
-  if (!pool.windows?.length) return { ...base, light: "red", reason: "No allowance reading" };
+  if (!pool.windows?.length) return { ...base, light: "red", reading: "missing", reason: "No allowance reading" };
   if (pool.readAt && pool.ttl && now - pool.readAt > 2 * pool.ttl + 5 * 60_000) {
-    return { ...base, light: "red", reason: `Reading is stale (${duration(now - pool.readAt)} old)` };
+    return { ...base, light: "red", reading: "stale", reason: `Reading is stale (${duration(now - pool.readAt)} old)` };
   }
 
   // May the queue spend here? The tightest window above its reserve.

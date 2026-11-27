@@ -3,6 +3,11 @@
 
 /** Tiers, most capable first. Only "big" models run estimates. */
 export const TIERS = ["big", "mid", "small"];
+export const PERMISSION_PROFILES = {
+  default: { label: "Agent default", description: "Use this agent's configured permissions." },
+  plan: { label: "Plan", description: "Inspect the project and produce a plan without editing it." },
+  edit: { label: "Edit", description: "Allow edits in the job's worktree with the agent's usual tool checks." },
+};
 
 export const DEFAULT_CATALOG = {
   agents: [
@@ -16,6 +21,7 @@ export const DEFAULT_CATALOG = {
       ],
       // {model} and {effort} are filled in; an empty list leaves the agent's default.
       flags: { model: ["--model", "{model}"], effort: ["--effort", "{effort}"] },
+      permissions: { plan: ["--permission-mode", "plan"], edit: ["--permission-mode", "acceptEdits"] },
       estimate: ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "--permission-mode", "plan",
         "--output-format", "json", "{prompt}"],
     },
@@ -28,6 +34,10 @@ export const DEFAULT_CATALOG = {
         { id: "gpt-6-luna", label: "GPT-6 Luna", tier: "small" },
       ],
       flags: { model: ["--model", "{model}"], effort: ["-c", "model_reasoning_effort=\"{effort}\""] },
+      permissions: {
+        plan: ["--sandbox", "read-only", "--ask-for-approval", "never"],
+        edit: ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
+      },
       estimate: ["codex", "exec", "--model", "{model}", "-c", "model_reasoning_effort=\"{effort}\"",
         "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "{prompt}"],
     },
@@ -43,6 +53,7 @@ export const DEFAULT_CATALOG = {
         { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tier: "small" },
       ],
       flags: { model: ["--model", "{model}-{effort}"], effort: [] },
+      permissions: { plan: ["--mode", "plan"], edit: ["--mode", "accept-edits"] },
       // agy takes the prompt as the flag's own value, attached with "=".
       estimate: ["agy", "--model", "{model}-{effort}", "--mode", "plan", "--output-format", "json", "--print={prompt}"],
     },
@@ -82,13 +93,23 @@ export function poolsOfAgent(agent, pools) {
 
 const fill = (parts, vars) => parts.map((part) => part.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? ""));
 
-/** The argv that starts an agent interactively with this model and effort. */
-export function launchArgv(agent, model, effort) {
+export function supportsPermissions(agent, profile = "default") {
+  const args = agent?.permissions?.[profile];
+  return Boolean(agent && (profile === "default" ||
+    (Object.hasOwn(PERMISSION_PROFILES, profile) && Array.isArray(args) && args.every((arg) => typeof arg === "string"))));
+}
+
+/** The argv that starts an agent interactively with this model, effort and permission profile. */
+export function launchArgv(agent, model, effort, permissions = "default") {
+  if (!supportsPermissions(agent, permissions)) {
+    throw new Error(`${agent?.name ?? "This agent"} does not support the ${permissions} permission profile.`);
+  }
   const vars = { model, effort };
   return [
     ...agent.run,
     ...(model ? fill(agent.flags?.model ?? [], vars) : []),
     ...(effort ? fill(agent.flags?.effort ?? [], vars) : []),
+    ...(permissions === "default" ? [] : agent.permissions[permissions]),
   ];
 }
 

@@ -36,6 +36,12 @@ describe("reviewStep", () => {
     expect(reviewStep(pr(), watch(), ME, false).action).toBe("wait");
   });
 
+  test("a brake holds review rounds and automation while still recognizing a merge", () => {
+    expect(reviewStep(pr(), watch(), ME, true, true).action).toBe("wait");
+    expect(reviewStep(pr(), watch({ rounds: 3 }), ME, true, true).action).toBe("wait");
+    expect(reviewStep(pr({ view: { state: "MERGED" } }), watch(), ME, true, true).action).toBe("merged");
+  });
+
   test("handled comments aren't sent again", () => {
     expect(reviewStep(pr(), watch({ rounds: 1, handled: ["i3"], sentAt: at(4) }), ME, true).action).toBe("wait");
   });
