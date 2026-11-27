@@ -1,0 +1,13 @@
+{
+  "name": "herdr-usage-queue",
+  "version": "0.1.0",
+  "description": "Queue agent jobs in Herdr and run them on whichever subscription has allowance to spare",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "install-mod": "bun herdr-app/install.ts"
+  },
+  "keywords": ["herdr", "herdr-mod", "usage", "queue"],
+  "license": "MIT"
+}

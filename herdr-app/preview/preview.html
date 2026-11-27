@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  The gallery preview (herdr-app/preview.png), 1120×700, in the same paper-and-rails style as the
+  other Herdr mods (Usage Monitor, Saved Prompts, Context Monitor). Render it with:
+    bun herdr-app/preview/render.ts
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;900&family=JetBrains+Mono:wght@700;800&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1120px; height: 700px; overflow: hidden; }
+  body { position: relative; background: #f0e3c8; font-family: Geist, sans-serif; color: #f1efe9; }
+  svg.paper { position: absolute; inset: 0; }
+
+  .kicker { position: absolute; left: 62px; top: 48px; font: 800 19px/1 "JetBrains Mono", monospace;
+    letter-spacing: 0.09em; color: #b9472d; white-space: pre; }
+  h1 { position: absolute; left: 58px; top: 86px; font: 900 79px/1 Geist, sans-serif; letter-spacing: -0.052em;
+    color: #24221e; white-space: nowrap; }
+  .rule { position: absolute; left: 62px; top: 179px; width: 995px; height: 1px; background: #b9aa8d; }
+
+  .card { position: absolute; left: 62px; top: 213px; width: 988px; height: 342px; background: #131916;
+    border-radius: 14px; box-shadow: 6px 6px 0 #c9b796; display: flex; overflow: hidden; }
+  .pane { display: flex; flex-direction: column; }
+  .left { width: 392px; border-right: 1px solid #2c332f; }
+  .right { flex: 1; }
+  .head { height: 60px; padding: 0 22px 0 24px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid #2c332f; }
+  .title { font-weight: 700; font-size: 24px; letter-spacing: -0.01em; flex: 1; }
+  .tab { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 8px;
+    color: #9ca59f; font-size: 16px; font-weight: 600; }
+  .tab.on { background: #26302b; color: #f1efe9; }
+  .tab svg { width: 17px; height: 17px; }
+  .plus { color: #9ca59f; font-size: 26px; font-weight: 400; margin-left: 4px; }
+  .sub { padding: 14px 24px 0; color: #7f8a84; font-size: 15px; }
+  .lights { display: flex; gap: 18px; padding: 10px 24px 10px; color: #b9c0bb; font-size: 16px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 10px; margin-right: 7px; }
+  .g { background: #2fbf71; } .y { background: #d4a72c; } .r { background: #e5534b; }
+  .rows { padding: 2px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .row { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 10px; border-radius: 10px;
+    font-size: 20px; font-weight: 600; }
+  .row.hl { background: #1f2824; }
+  .row .name { flex: 1; white-space: nowrap; }
+  .btn { height: 30px; padding: 0 11px; display: flex; align-items: center; border-radius: 7px; background: #26302b;
+    font-size: 15px; font-weight: 600; color: #f1efe9; }
+  .btn.dim { color: #6d7771; }
+  .btn.auto { background: #1d3328; color: #5fd69a; border: 1px solid #2fbf71; }
+  .btn.primary { background: #f1efe9; color: #131916; }
+
+  .rhead .route { color: #9ca59f; font-size: 17px; font-weight: 500; }
+  .box { margin: 22px 22px 0; border: 1px solid #66756c; border-radius: 12px; padding: 18px 20px; background: #1a211e; }
+  .rec { font-size: 15px; color: #8d9790; margin-bottom: 10px; }
+  .choice { font-size: 21px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .size { font-size: 15px; color: #7f8a84; font-weight: 500; }
+  .why { font-size: 16px; color: #b9c0bb; margin-top: 10px; line-height: 1.4; }
+  .state { font-size: 15px; color: #8d9790; margin-top: 12px; }
+  .state b { color: #5fd69a; font-weight: 600; }
+  .actions { display: flex; gap: 10px; justify-content: flex-end; padding: 22px 22px 0; }
+  .actions .btn { height: 36px; padding: 0 16px; font-size: 16px; }
+
+  .note { position: absolute; font: 800 15px/1 "JetBrains Mono", monospace; letter-spacing: 0.08em; color: #b9472d; white-space: nowrap; }
+</style>
+</head>
+<body>
+<svg class="paper" width="1120" height="700" viewBox="0 0 1120 700">
+  <defs>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7"/>
+      <feColorMatrix values="0 0 0 0 0.45  0 0 0 0 0.36  0 0 0 0 0.22  0 0 0 0.09 0"/>
+    </filter>
+    <pattern id="grid" width="9.6" height="9.6" patternUnits="userSpaceOnUse">
+      <path d="M9.6 0V9.6M0 9.6H9.6" stroke="#e58a64" stroke-opacity="0.62" stroke-width="0.8" fill="none"/>
+    </pattern>
+    <!-- Paper outside the rails: below the bottom ones and right of the right ones. -->
+    <clipPath id="outside"><path d="M0 638H1004L1086 556V0H1120V700H0Z"/></clipPath>
+  </defs>
+  <rect width="1120" height="700" filter="url(#grain)"/>
+  <rect width="1120" height="700" fill="url(#grid)" clip-path="url(#outside)"/>
+  <g fill="none" stroke="#dc5a2c" stroke-width="2.2">
+    <path d="M1072 0V550L992 624H0"/>
+    <path d="M1078 0V553L995 630H0"/>
+    <path d="M1084 0V556L998 636H0"/>
+  </g>
+  <g stroke="#dc6436" stroke-width="2.2">
+    <path d="M16 15H30"/><path d="M1046 15H1060"/><path d="M16 685H30"/><path d="M1046 685H1060"/>
+  </g>
+</svg>
+
+<div class="kicker">+ HERDR MOD  /  USAGE QUEUE</div>
+<h1>Spend what resets unused</h1>
+<div class="rule"></div>
+
+<div class="card">
+  <div class="pane left">
+    <div class="head">
+      <div class="title">Usage Queue</div>
+      <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>1</div>
+      <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>3</div>
+      <div class="plus">+</div>
+    </div>
+    <div class="sub">Ready to launch</div>
+    <div class="lights">
+      <span><i class="dot g"></i>Claude</span><span><i class="dot y"></i>Codex</span><span><i class="dot r"></i>Antigravity</span>
+    </div>
+    <div class="rows">
+      <div class="row hl"><i class="dot g"></i><span class="name">EU map</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
+      <div class="row"><i class="dot r"></i><span class="name">Flaky test hunt</span><span class="btn auto" id="auto">Auto in 2h 10m</span></div>
+      <div class="row"><i class="dot y"></i><span class="name">Docs refresh</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
+    </div>
+  </div>
+  <div class="pane right">
+    <div class="head rhead"><div class="title">EU map</div><div class="route">~/Code/Games</div></div>
+    <div class="box">
+      <div class="rec">Estimated by Codex · GPT-6.2 Astra</div>
+      <div class="choice"><i class="dot g"></i>Claude · Sonnet · medium <span class="size">size m</span></div>
+      <div class="why">A mid-tier model at medium effort is enough to add a European board to iron_routes.html.</div>
+      <div class="state"><b>Ready:</b> ≈32 points of 7d weekly reset unused in 1d 4h</div>
+    </div>
+    <div class="actions"><span class="btn">Unapprove</span><span class="btn">Auto</span><span class="btn primary">Launch</span></div>
+  </div>
+</div>
+
+<svg class="paper" width="1120" height="700" viewBox="0 0 1120 700">
+  <path d="M464 583H378L364 569V557" fill="none" stroke="#c8502c" stroke-width="1.6"/>
+  <circle cx="364" cy="557" r="3.4" fill="#c8502c"/>
+</svg>
+<div class="note" style="left: 476px; top: 576px;">AUTO LAUNCHES WHEN ALLOWANCE IS BACK</div>
+</body>
+</html>
