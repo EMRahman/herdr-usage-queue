@@ -227,6 +227,15 @@ async function patchWatch(id, changes) {
   changed();
 }
 
+/** The space a launched job's agent runs in (its worktree folder), or null once it's gone. */
+function agentSpace(job) {
+  const folder = jobState(job.id).launched?.folder;
+  if (!folder) return null;
+  const all = panes();
+  return spaces().find((sp) => sp.folder === folder
+    || sp.tabs?.some((tab) => all.some((p) => p.tab === tab.id && p.cwd?.startsWith(folder)))) ?? null;
+}
+
 /** The agent working in a launched job's worktree: its terminal address, or null. */
 function agentIn(folder) {
   const cwd = new Map(panes().map((p) => [p.pane, p.cwd ?? ""]));
@@ -672,7 +681,7 @@ export default class UsageQueue extends View {
       : `${job.title}\n${LIGHT_WORD[j.light]}: ${j.reason}${s.approval?.hash === job.hash ? `\n${routeText(s.approval.route)}` : ""}`;
     return h_flex().id(`job-${kind}-${job.id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(7)
       .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(tip)
-      .on_click(() => (kind === "launched" ? this.openLaunched(job) : this.openJob(job.id)))
+      .on_click(() => this.openJob(job.id))
       .child(dot(j.light, 7))
       .child(this.rowTitle(t, job, kind))
       .child(right);
@@ -687,15 +696,6 @@ export default class UsageQueue extends View {
     return h_flex().flex_1().min_w(0).gap(4).items_center()
       .child(title)
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(`· after ${wait.job.title}`));
-  }
-
-  openLaunched(job) {
-    const folder = jobState(job.id).launched?.folder;
-    const all = panes();
-    const space = spaces().find((sp) => sp.folder === folder
-      || sp.tabs?.some((tab) => all.some((p) => p.tab === tab.id && p.cwd?.startsWith(folder ?? "\0"))));
-    if (space) run("space.select", { id: space.id });
-    else this.openJob(job.id);
   }
 
   renderSidebar(t) {
@@ -1023,6 +1023,11 @@ export default class UsageQueue extends View {
     if (approved) {
       footer.child(button(t, "unapprove", launched ? "Queue again" : "Unapprove", "secondary",
         (_e, cx) => cx.spawn(async () => { this.route = null; await unapprove(job); cx.notify(); })));
+      if (launched) {
+        const space = agentSpace(job);
+        footer.child(button(t, "go-to-agent", space ? "Go to agent" : "Agent closed", "primary",
+          () => { if (space) { run("space.select", { id: space.id }); closeOverlay(p.overlay); } }, !space));
+      }
       if (!launched) {
         footer.child(s.approval.auto
           ? button(t, "auto", "Cancel Auto", "secondary", (_e, cx) => cx.spawn(async () => { await setAuto(job, false); cx.notify(); }))
