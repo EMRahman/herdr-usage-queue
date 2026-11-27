@@ -1,4 +1,4 @@
-// Jobs and their place in the flow: Pending Launch Approval → Ready to Launch → Launched.
+// Jobs in the launch queue and launch history.
 // Pure: job files, state and judgements in; lists and choices out.
 
 import { agentOf, estimators, modelOf, poolFor, poolsOfAgent } from "./catalog.js";
@@ -51,23 +51,23 @@ export function jobId(title, now = Date.now()) {
 
 const byPriority = (a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 
-/**
- * Split jobs into the three lists. An approval counts only for the job file it was given for:
- * a changed file goes back to Pending Launch Approval.
- */
+/** The saved allocation is stored under "approval" and applies to one version of the file. */
+export function allocationFor(job, state) {
+  const allocation = state.jobs?.[job.id]?.approval;
+  return allocation?.route && allocation.hash === job.hash ? allocation : null;
+}
+
+/** A job stays in the same queue until the current version launches. */
 export function classify(jobs, state) {
-  const pending = [], ready = [], launched = [];
+  const queued = [], launched = [];
   for (const job of jobs) {
     const s = state.jobs?.[job.id] ?? {};
-    const approved = s.approval && s.approval.hash === job.hash;
-    if (approved && s.launched?.hash === job.hash) launched.push(job);
-    else if (approved) ready.push(job);
-    else pending.push(job);
+    if (allocationFor(job, state) && s.launched?.hash === job.hash) launched.push(job);
+    else queued.push(job);
   }
   const launchedAt = (j) => state.jobs?.[j.id]?.launched?.at ?? 0;
   return {
-    pending: pending.sort(byPriority),
-    ready: ready.sort(byPriority),
+    queued: queued.sort(byPriority),
     launched: launched.sort((a, b) => launchedAt(b) - launchedAt(a)),
   };
 }
@@ -133,10 +133,10 @@ export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(
   const settling = new Set(Object.values(state.jobs ?? {})
     .filter((s) => s.launched?.pool && now - s.launched.at < settleMs).map((s) => s.launched.pool));
   const due = [];
-  for (const job of classify(jobs, state).ready) {
-    const approval = state.jobs?.[job.id]?.approval;
-    if (!approval?.auto || blockedBy(job, jobs, state)) continue;
-    const { pool, judgement } = routeStatus(catalog, approval.route, pools, judged);
+  for (const job of classify(jobs, state).queued) {
+    const allocation = allocationFor(job, state);
+    if (!allocation?.auto || blockedBy(job, jobs, state)) continue;
+    const { pool, judgement } = routeStatus(catalog, allocation.route, pools, judged);
     if (!pool || judgement.light === "red" || settling.has(pool.id)) continue;
     settling.add(pool.id);
     due.push(job);
@@ -156,10 +156,14 @@ export function isFinished(entry) {
   return Boolean(launched.finishedAt);
 }
 
-/** The job this one waits for (approval's "after", else the job file's), if it isn't finished:
+export function waitFor(job, state) {
+  const allocation = allocationFor(job, state);
+  return allocation?.after === undefined ? job.after : allocation.after;
+}
+
+/** The job this one waits for, if it isn't finished:
  *  { job, why }. A job that's gone doesn't hold anything up. */
-export function blockedBy(job, jobs, state) {
-  const after = state.jobs?.[job.id]?.approval?.after ?? job.after;
+export function blockedBy(job, jobs, state, after = waitFor(job, state)) {
   if (!after || after === job.id) return null;
   const first = jobs.find((j) => j.id === after);
   if (!first) return null;
@@ -176,7 +180,10 @@ export function blockedBy(job, jobs, state) {
 /** Jobs this one can wait for: not finished, not itself, and not waiting on it (directly or
  *  further down), so there's no loop. */
 export function canWaitFor(job, jobs, state) {
-  const after = (id) => state.jobs?.[id]?.approval?.after ?? jobs.find((j) => j.id === id)?.after ?? null;
+  const after = (id) => {
+    const candidate = jobs.find((j) => j.id === id);
+    return candidate ? waitFor(candidate, state) : null;
+  };
   const waitsOn = (id, target, seen = new Set()) => {
     for (let next = after(id); next && !seen.has(next); next = after(next)) {
       if (next === target) return true;

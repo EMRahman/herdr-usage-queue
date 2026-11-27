@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CATALOG, estimateArgv, launchArgv, mergeCatalog, poolFor } from "../herdr-app/mods/usage-queue/catalog.js";
 import { estimatePrompt, parseEstimate } from "../herdr-app/mods/usage-queue/estimate.js";
 import {
-  agentLights, classify, dueToLaunch, estimatorChoices, jobText, pinnedRoute, proposeRoute, readJob,
+  agentLights, allocationFor, classify, dueToLaunch, estimatorChoices, jobText, pinnedRoute, proposeRoute, readJob,
 } from "../herdr-app/mods/usage-queue/queue.js";
 
 const catalog = mergeCatalog(null);
@@ -64,22 +64,25 @@ describe("jobs", () => {
     expect(pinnedRoute(catalog, job)).toMatchObject({ agent: "claude", model: "sonnet", effort: "low" });
   });
 
-  test("classify: approval holds only for the file it was given for", () => {
+  test("all unlaunched jobs share one priority-sorted queue, including jobs with stale allocations", () => {
     const jobs = [
       { id: "a", hash: "h1", priority: 2, createdAt: 1 },
       { id: "b", hash: "h2", priority: 1, createdAt: 2 },
       { id: "c", hash: "h3", priority: 1, createdAt: 3 },
       { id: "d", hash: "h4", priority: 1, createdAt: 4 },
     ];
+    const route = { agent: "claude", model: "sonnet", effort: "medium", size: "l" };
     const state = { jobs: {
-      a: { approval: { hash: "h1" } },
-      b: { approval: { hash: "old" } },
-      d: { approval: { hash: "h4" }, launched: { hash: "h4", at: 5 } },
+      a: { approval: { hash: "h1", route } },
+      b: { approval: { hash: "old", route }, launched: { hash: "old", at: 4 } },
+      d: { approval: { hash: "h4", route }, launched: { hash: "h4", at: 5 } },
     } };
     const lists = classify(jobs, state);
-    expect(lists.ready.map((x) => x.id)).toEqual(["a"]);
-    expect(lists.pending.map((x) => x.id)).toEqual(["b", "c"]);
+    expect(lists.queued.map((x) => x.id)).toEqual(["b", "c", "a"]);
     expect(lists.launched.map((x) => x.id)).toEqual(["d"]);
+    expect(allocationFor(jobs[0], state).route.size).toBe("l");
+    expect(allocationFor(jobs[1], state)).toBe(null);
+    expect(allocationFor(jobs[2], state)).toBe(null);
   });
 });
 
@@ -136,6 +139,14 @@ describe("dueToLaunch", () => {
   test("nothing on red, and nothing while paused", () => {
     expect(dueToLaunch(jobs, state(), catalog, pools, judged("red", "red"))).toEqual([]);
     expect(dueToLaunch(jobs, state({ paused: true }), catalog, pools, judged("green", "green"))).toEqual([]);
+  });
+
+  test("Auto skips jobs awaiting allocation, jobs edited since allocation, and launched jobs", () => {
+    const s = state();
+    delete s.jobs.a.approval;
+    s.jobs.b.approval.hash = "old";
+    s.jobs.c.launched = { hash: "c", at: 5 };
+    expect(dueToLaunch(jobs, s, catalog, pools, judged("green", "green"))).toEqual([]);
   });
 
   test("a pool something launched on recently is left to settle", () => {
@@ -212,6 +223,12 @@ describe("waiting for another job", () => {
   test("the job file's \"after\" counts too, and a deleted job doesn't hold anything up", () => {
     expect(blockedBy(jobs[2], jobs, { jobs: {} }).why).toBe("isn't launched yet");
     expect(blockedBy({ id: "z", after: "gone" }, jobs, { jobs: {} })).toBe(null);
+  });
+
+  test("clearing a file dependency overrides it until the file changes", () => {
+    const state = { jobs: { c: { approval: { hash: "c", route, after: null } } } };
+    expect(blockedBy(jobs[2], jobs, state)).toBe(null);
+    expect(blockedBy({ ...jobs[2], hash: "edited" }, jobs, state).job.id).toBe("b");
   });
 
   test("no loops: a job can't wait for one that waits for it", () => {

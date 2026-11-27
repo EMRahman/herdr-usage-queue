@@ -1,9 +1,8 @@
 // Usage Queue: queue agent jobs and launch them on whichever subscription has allowance to spare.
 //
 // Three views of one mod:
-// - the sidebar block (no props): Pending Launch Approval and Ready to Launch, behind two icons,
-//   with a traffic light per coding agent;
-// - the job dialog ({ dialog: "job", id }): estimate, review the proposal, approve, launch;
+// - the sidebar block (no props): launch queue and recent launches, with a light per agent;
+// - the job dialog ({ dialog: "job", id }): set or estimate the allocation and launch;
 // - the add dialog ({ dialog: "add" }): a new job file.
 //
 // Data lives at module scope, shared by every copy; a change bumps a shared revision so every
@@ -17,11 +16,13 @@ import {
   setShared, shared, spaces, theme, watchFolder,
 } from "herdr";
 import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
+import { SIZES, SIZE_TEXT } from "./estimate.js";
 import { fetchPR, findPR, mergePR, myLogin, prState } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
-  agentLights, blockedBy, canWaitFor, isFinished, classify, dueToLaunch, routeOptions, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
+  agentLights, allocationFor, blockedBy, canWaitFor, classify, dueToLaunch, estimatorChoices, isFinished,
+  jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, waitFor,
 } from "./queue.js";
 import { judgeAll, poolsFromReport } from "./rule.js";
 import {
@@ -51,12 +52,7 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 // Fixed light colors, as Usage Monitor's: their meaning shouldn't depend on the theme.
 const LIGHT = { green: "#2fbf71", yellow: "#d4a72c", red: "#e5534b" };
 const LIGHT_WORD = { green: "Ready", yellow: "Open", red: "Not yet" };
-const ICON = {
-  pending: "mods/workspace-chrome/clock.svg",
-  ready: "mods/workspace-chrome/circle-check.svg",
-  add: "mods/workspace-chrome/plus.svg",
-  close: "mods/workspace-chrome/x.svg",
-};
+const SIZE_LABEL = { s: "Small", m: "Medium", l: "Large" };
 
 // --- Shared data ---
 
@@ -67,8 +63,8 @@ const data = {
   loaded: false,
 };
 /** In-memory work running now, by job id. */
-const running = { estimates: new Map(), launches: new Set(), deletions: new Set() };
-/** Each job's last estimate run, for the dialog: { by, prompt, reply, error, log, at }. */
+const running = { estimates: new Map(), allocations: new Set(), launches: new Set(), deletions: new Set() };
+/** Each job's last estimate run, for the dialog. */
 const lastRuns = new Map();
 /** Work asked for by dialogs, run by a sidebar copy. */
 const queue = [];
@@ -104,7 +100,7 @@ async function refreshReadings() {
   try {
     data.catalog = await loadCatalog();
     // Scheduled jobs need fresh readings even when Usage Monitor's readout isn't polling.
-    const report = await readReport(scheduled().length > 0);
+    const report = await readReport(hasScheduled());
     data.pools = poolsFromReport(report);
     data.readAt = Date.now();
     data.readError = "";
@@ -117,25 +113,28 @@ async function refreshReadings() {
   changed();
 }
 
-/** Approved jobs set to launch by themselves when there's allowance. */
-const scheduled = () => classify(data.jobs, data.state).ready.filter((j) => jobState(j.id).approval?.auto);
+/** Queued jobs set to launch by themselves when there's allowance. */
+const hasScheduled = () => classify(data.jobs, data.state).queued.some((job) => allocationFor(job, data.state)?.auto);
 
 /** Launches the scheduled jobs whose allowance is back (see dueToLaunch). */
 async function launchScheduled() {
   for (const job of dueToLaunch(data.jobs, data.state, data.catalog, data.pools, data.judged, Date.now(), SETTLE_MS)) {
-    if (!running.launches.has(job.id)) await doLaunch({ id: job.id, auto: true });
+    await doLaunch({ id: job.id, hash: job.hash, auto: true });
   }
 }
 
 const jobById = (id) => data.jobs.find((j) => j.id === id) ?? null;
 const jobState = (id) => data.state.jobs?.[id] ?? {};
+const currentVersion = (job, entry) => entry?.hash === job.hash ? entry : null;
 const lights = () => agentLights(data.catalog, data.pools, data.judged);
 const lightLines = () => lights().map((l) => `${l.agent.id}: ${l.judgement.light} (${l.judgement.reason})`);
 
-/** The light to show beside a job: its approved or proposed route's, else its agents' best. */
+/** The light to show beside a job: its saved or proposed route's, else its agents' best. */
 function jobLight(job) {
   const s = jobState(job.id);
-  const route = s.approval?.hash === job.hash ? s.approval.route : s.proposal ?? pinnedRoute(data.catalog, job);
+  const route = allocationFor(job, data.state)?.route
+    ?? (currentVersion(job, s.estimate) ? s.proposal : null)
+    ?? pinnedRoute(data.catalog, job);
   if (route) return routeStatus(data.catalog, route, data.pools, data.judged).judgement;
   const own = lights().filter((l) => job.agents.includes(l.agent.id)).map((l) => l.judgement);
   const rank = { green: 2, yellow: 1, red: 0 };
@@ -144,23 +143,23 @@ function jobLight(job) {
 
 // --- Work: estimates and launches ---
 
-async function doEstimate({ id, agentId, modelId }) {
+async function doEstimate({ id, hash, agentId, modelId }) {
   const job = jobById(id);
   const agent = agentOf(data.catalog, agentId);
   const model = modelOf(agent, modelId);
-  if (!job || !agent || !model || running.estimates.has(id)) return;
+  if (!job || job.hash !== hash || !agent || !model || running.estimates.has(id)) return;
   const effort = estimatorEffort(agent);
-  running.estimates.set(id, { agent: agent.id, model: model.id, label: `${agent.name} ${model.label}`, startedAt: Date.now(), error: "" });
+  running.estimates.set(id, { hash, label: `${agent.name} ${model.label}`, startedAt: Date.now(), error: "" });
   changed();
   const by = { agent: agent.id, model: model.id, effort, label: `${agent.name} ${model.label}` };
   await record({ type: "estimate-started", job: id, by });
   let prompt = "";
   try {
     prompt = await buildEstimatePrompt(job, data.catalog, lightLines());
-    lastRuns.set(id, { by, prompt, reply: "", error: "", log: null, at: Date.now() });
+    lastRuns.set(id, { hash, by, prompt, reply: "", log: null });
     changed();
     const { estimate, reply, log } = await runEstimate({ job, catalog: data.catalog, agent, model: model.id, effort, prompt });
-    lastRuns.set(id, { by, prompt, reply, error: "", log, at: Date.now() });
+    lastRuns.set(id, { hash, by, prompt, reply, log });
     const proposal = proposeRoute(data.catalog, estimate, data.pools, data.judged);
     data.state = await updateState((s) => {
       s.jobs[id] = {
@@ -174,19 +173,20 @@ async function doEstimate({ id, agentId, modelId }) {
   } catch (e) {
     const error = String(e?.message ?? e);
     running.estimates.set(id, { ...running.estimates.get(id), error, failed: true });
-    lastRuns.set(id, { by, prompt, reply: e?.reply ?? "", stderr: e?.stderr ?? "", error, log: e?.log ?? null, at: Date.now() });
+    lastRuns.set(id, { hash, by, prompt, reply: e?.reply ?? "", stderr: e?.stderr ?? "", log: e?.log ?? null });
     await record({ type: "estimate-failed", job: id, error, log: e?.log ?? null });
   }
   changed();
 }
 
-async function doLaunch({ id, auto = false }) {
+async function doLaunch({ id, hash, auto = false }) {
   const job = jobById(id);
-  const s = jobState(id);
-  if (!job || running.launches.has(id) || s.approval?.hash !== job.hash) return;
+  if (!job || job.hash !== hash || running.launches.has(id) || running.allocations.has(id) || running.deletions.has(id)) return;
+  const allocation = allocationFor(job, data.state);
+  if (!allocation || currentVersion(job, jobState(id).launched) || (auto && (!allocation.auto || data.state.paused))) return;
   const wait = blockedBy(job, data.jobs, data.state);
   if (wait) return notify({ title: `${job.title}: waiting`, body: `It waits for ${wait.job.title}, which ${wait.why}.`, level: "warning" });
-  const route = s.approval.route;
+  const { route } = allocation;
   const { agent, judgement, pool } = routeStatus(data.catalog, route, data.pools, data.judged);
   if (!agent) return notify({ title: "Can't launch", body: `Unknown agent ${route.agent}.`, level: "error" });
   if (judgement.light === "red") {
@@ -195,7 +195,7 @@ async function doLaunch({ id, auto = false }) {
   running.launches.add(id);
   changed();
   try {
-    const prMode = s.approval.pr ?? job.pr ?? "off";
+    const prMode = allocation.pr ?? job.pr ?? "off";
     const launched = await launchJob({ job, agent, model: route.model, effort: route.effort, pr: prMode });
     const entry = { at: Date.now(), hash: job.hash, route, pool: pool?.id ?? null, light: judgement.light, ...launched };
     if (prMode !== "off") {
@@ -362,7 +362,7 @@ async function lateCheck(job, launched, w, now) {
     await patchWatch(job.id, { phase, changedAt: now, error: undefined, sendFailed: undefined });
     await record({ type: `pr-${phase}`, job: job.id, number: w.number, late: true });
     if (phase === "merged") {
-      const waiting = data.jobs.filter((j) => (jobState(j.id).approval?.after ?? j.after) === job.id && !jobState(j.id).launched);
+      const waiting = data.jobs.filter((j) => waitFor(j, data.state) === job.id && !currentVersion(j, jobState(j.id).launched));
       if (waiting.length) notify({ title: `PR #${w.number} merged: ${job.title}`, body: `${waiting.map((j) => j.title).join(", ")} can launch now.`, level: "info" });
     }
   } catch {}
@@ -412,13 +412,19 @@ function prStatus(w) {
 }
 
 async function setAfter(job, after) {
-  data.state = await updateState((s) => { if (s.jobs[job.id]?.approval) s.jobs[job.id].approval.after = after; });
+  data.state = await updateState((s) => {
+    const allocation = allocationFor(job, s);
+    if (allocation) allocation.after = after;
+  });
   await record({ type: "wait-for", job: job.id, after });
   changed();
 }
 
 async function setPrMode(job, pr) {
-  data.state = await updateState((s) => { if (s.jobs[job.id]?.approval) s.jobs[job.id].approval.pr = pr; });
+  data.state = await updateState((s) => {
+    const allocation = allocationFor(job, s);
+    if (allocation) allocation.pr = pr;
+  });
   changed();
 }
 
@@ -445,7 +451,7 @@ function loadIfNeeded(cx) {
   });
 }
 
-async function approve(job, route, auto, pr = "off", after = job.after) {
+async function saveAllocation(job, route, auto, pr, after) {
   data.state = await updateState((s) => {
     s.jobs[job.id] = { ...(s.jobs[job.id] ?? {}), approval: { at: Date.now(), hash: job.hash, route, auto, pr, after } };
   });
@@ -453,10 +459,11 @@ async function approve(job, route, auto, pr = "off", after = job.after) {
   changed();
 }
 
-/** Turns "launch when there's allowance" on or off for an approved job. */
+/** Turns "launch when there's allowance" on or off for an allocated job. */
 async function setAuto(job, auto) {
   data.state = await updateState((s) => {
-    if (s.jobs[job.id]?.approval) s.jobs[job.id].approval.auto = auto;
+    const allocation = allocationFor(job, s);
+    if (allocation) allocation.auto = auto;
   });
   await record({ type: auto ? "scheduled" : "unscheduled", job: job.id });
   changed();
@@ -468,12 +475,13 @@ async function setPaused(paused) {
   changed();
 }
 
-/**
- * The Auto button: with allowance now, the same as Launch; without, the job launches by itself
- * as soon as there is. Returns false when the launch runs in this copy (see ask).
- */
+function requestLaunch(job, cx, auto = false) {
+  return ask({ type: "launch", id: job.id, hash: job.hash, auto }, cx);
+}
+
+/** Starts the job now if eligible, or schedules it. Returns false if this view runs it. */
 function autoLaunch(job, cx) {
-  if (jobLight(job).light !== "red" && !blockedBy(job, data.jobs, data.state)) return ask({ type: "launch", id: job.id }, cx);
+  if (!data.state.paused && jobLight(job).light !== "red" && !blockedBy(job, data.jobs, data.state)) return requestLaunch(job, cx);
   cx.spawn(async () => setAuto(job, true));
   return true;
 }
@@ -481,19 +489,26 @@ function autoLaunch(job, cx) {
 /** When a red light should change, for people: "in 2h 10m", or "" when unknown. */
 const whenOpen = (j) => (j.changesAt && j.changesAt > Date.now() ? `in ${duration(j.changesAt - Date.now())}` : "");
 
-async function unapprove(job) {
-  data.state = await updateState((s) => {
-    const entry = s.jobs[job.id] ?? {};
-    delete entry.approval;
-    delete entry.launched;
-    s.jobs[job.id] = entry;
-  });
-  await record({ type: "unapproved", job: job.id });
+async function clearAllocation(job) {
+  const id = job.id;
+  if (running.launches.has(id) || running.allocations.has(id) || running.deletions.has(id)) return;
+  running.allocations.add(id);
   changed();
+  try {
+    data.state = await updateState((s) => {
+      if (!allocationFor(job, s)) return;
+      delete s.jobs[id].approval;
+      delete s.jobs[id].launched;
+    });
+    await record({ type: "unapproved", job: id });
+  } finally {
+    running.allocations.delete(id);
+    changed();
+  }
 }
 
 async function removeJob(id) {
-  if (running.deletions.has(id)) return;
+  if (running.deletions.has(id) || running.allocations.has(id) || running.launches.has(id)) return;
   running.deletions.add(id);
   try {
     await deleteJob(id);
@@ -570,11 +585,9 @@ const routeText = (route) => {
 export default class UsageQueue extends View {
   init(_props, cx) {
     const p = props() ?? {};
-    this.width = Infinity;
     if (p.dialog === "add") return this.initAdd(cx);
     if (p.dialog === "job") return this.initJob(cx);
 
-    this.tab = localStorage.getItem("tab") === "ready" ? "ready" : "pending";
     if (checking()) return;
     workers++;
     this.worker = true;
@@ -615,12 +628,6 @@ export default class UsageQueue extends View {
 
   // ---------- Sidebar ----------
 
-  setTab(tab, cx) {
-    this.tab = tab;
-    localStorage.setItem("tab", tab);
-    cx.notify();
-  }
-
   openJob(id) {
     // A fixed share of the window: the middle scrolls, the title and buttons stay put.
     openOverlay({ mod: ID, kind: "dialog", width: 580, height: 0.85, props: { dialog: "job", id } });
@@ -630,17 +637,6 @@ export default class UsageQueue extends View {
     openOverlay({ mod: ID, kind: "dialog", width: 560, height: 0.85, props: { dialog: "add" } });
   }
 
-  tabButton(t, key, icon, label, count, narrow) {
-    const active = this.tab === key;
-    return h_flex().id(`tab-${key}`).h(26).px(narrow ? 0 : 8).when(narrow, (el) => el.w(32).justify_center())
-      .gap(6).flex_none().items_center().rounded(6).cursor_pointer()
-      .bg(active ? t.selected : "#00000000").hover((s) => s.bg(active ? t.selected : t.hover))
-      .tooltip(label)
-      .on_click((_e, cx) => this.setTab(key, cx))
-      .child(svg(icon).size(14).flex_none().text_color(active ? t.foreground : t.muted))
-      .child(div().text_size(11.5).font_medium().text_color(count ? (active ? t.foreground : t.muted) : t.dim).child(String(count)));
-  }
-
   lightsRow(t) {
     const list = lights();
     if (!list.length) {
@@ -648,7 +644,7 @@ export default class UsageQueue extends View {
         .child(data.readError || (data.readAt ? "No coding agent readings" : "Reading allowance…"))
         .when(Boolean(data.readError), (el) => el.id("read-error").tooltip(data.readError));
     }
-    return h_flex().id("lights").px(16).pb(6).gap(12).flex_none().items_center().children(list.map((l) => {
+    return h_flex().id("lights").px(16).pb(6).gap(12).flex_none().items_center().flex_wrap().children(list.map((l) => {
       const tip = [
         `${l.agent.name}: ${LIGHT_WORD[l.judgement.light]}`,
         ...l.pools.map((p) => `${p.name}: ${data.judged[p.id]?.reason ?? ""}`),
@@ -662,34 +658,36 @@ export default class UsageQueue extends View {
 
   jobRow(t, job, kind, wait = null) {
     const s = jobState(job.id);
+    const allocation = allocationFor(job, data.state);
     const j = kind === "launched" ? { light: s.launched?.light ?? "yellow", reason: "" } : jobLight(job);
-    const est = running.estimates.get(job.id);
     const waitText = wait ? `Waits for ${wait.job.title}, which ${wait.why}.` : "";
     let right = null;
-    if (kind === "ready") {
-      const launching = running.launches.has(job.id);
-      const auto = s.approval?.auto;
+    if (kind === "queued" && allocation) {
+      const busy = running.launches.has(job.id) || running.allocations.has(job.id);
+      const auto = allocation.auto;
       const red = j.light === "red";
-      right = launching
+      right = busy
         ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
         : auto
           ? rowButton(t, `auto-${job.id}`, data.state.paused ? "Paused" : wait ? "Auto after" : `Auto ${red ? whenOpen(j) : "now"}`.trim(), true,
             `Launches by itself ${wait ? `once ${wait.job.title} is finished and ` : "when "}there's allowance${data.state.paused ? " (scheduled launches are paused)" : ""}.${wait ? ` ${waitText}` : ""} Now: ${j.reason}\nClick to cancel.`,
             (cx) => cx.spawn(async () => setAuto(job, false)), true)
           : h_flex().gap(4).flex_none()
-            .child(rowButton(t, `auto-${job.id}`, "Auto", true, wait
+            .child(rowButton(t, `auto-${job.id}`, "Auto", true, data.state.paused
+              ? "Schedule this job for when Auto resumes."
+              : wait
               ? `Launch by itself once ${wait.job.title} is finished and there's allowance. ${waitText}`
               : red ? `Launch by itself when there's allowance. Now: ${j.reason}`
                 : `There's allowance now, so this launches now, like Launch (${LIGHT_WORD[j.light]}: ${j.reason}).`,
             (cx) => autoLaunch(job, cx)))
             .child(rowButton(t, `launch-${job.id}`, "Launch", !red && !wait,
               wait ? waitText : red ? `Not yet: ${j.reason}` : `Launch now (${LIGHT_WORD[j.light]}): ${j.reason}`,
-              (cx) => ask({ type: "launch", id: job.id }, cx)));
-    } else if (kind === "pending") {
-      const text = est && !est.failed ? null : s.estimate?.hash === job.hash || pinnedRoute(data.catalog, job) ? "Review" : est?.failed ? "Failed" : "Choose";
-      right = text === null
-        ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
-        : div().text_size(11.5).text_color(text === "Failed" ? LIGHT.red : t.dim).child(text);
+              (cx) => requestLaunch(job, cx)));
+    } else if (kind === "queued") {
+      const est = currentVersion(job, running.estimates.get(job.id));
+      right = est && !est.failed
+        ? div().flex_none().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
+        : div().flex_none().text_size(11.5).text_color(t.dim).child("Needs allocation");
     } else {
       const w = s.launched?.pr;
       const finished = isFinished(s);
@@ -710,7 +708,7 @@ export default class UsageQueue extends View {
     }
     const tip = kind === "launched"
       ? `${routeText(s.launched.route)}\n${s.launched.branch} from ${baseText(s.launched.base)}${s.launched.pr?.error ? `\n⚠ ${s.launched.pr.error}` : ""}`
-      : [job.title, `${LIGHT_WORD[j.light]}: ${j.reason}`, s.approval?.hash === job.hash ? routeText(s.approval.route) : "", waitText]
+      : [job.title, allocation ? routeText(allocation.route) : "Needs allocation", `${LIGHT_WORD[j.light]}: ${j.reason}`, waitText]
         .filter(Boolean).join("\n");
     return h_flex().id(`job-${kind}-${job.id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(7)
       .cursor_pointer().hover((st) => st.bg(t.hover)).tooltip(tip)
@@ -731,58 +729,38 @@ export default class UsageQueue extends View {
   }
 
   renderSidebar(t) {
-    const narrow = this.width < 160;
     const lists = classify(data.jobs, data.state);
-    if (narrow) {
-      return v_flex().id("root").on_size_change((size, cx) => this.resized(size, cx)).size_full()
-        .bg(t.chrome).border_t(1).border_color(t.border).pt(6).gap(4).items_center()
-        .child(this.tabButton(t, "pending", ICON.pending, "Pending Launch Approval", lists.pending.length, true))
-        .child(this.tabButton(t, "ready", ICON.ready, "Ready to Launch", lists.ready.length, true));
-    }
-    // A section title like the sidebar's others (Spaces, Agents, Context, Prompts), with the two
-    // views and + at its right.
     const header = h_flex().h(34).pl(16).pr(8).flex_none().items_center().gap(2)
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.dim).child("Usage Queue"))
-      .child(this.tabButton(t, "pending", ICON.pending, "Pending Launch Approval", lists.pending.length, narrow))
-      .child(this.tabButton(t, "ready", ICON.ready, "Ready to Launch", lists.ready.length, narrow))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.dim).child("Launch queue"))
       .child(div().id("add-job").size(24).flex_none().flex().items_center().justify_center().rounded(6)
           .text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
           .tooltip(draft ? "Add a job (continue your draft)" : "Add a job").on_click(() => this.openAdd())
-          .child(svg(ICON.add).size(14)));
+          .child(svg("mods/workspace-chrome/plus.svg").size(14)));
 
     const rows = [], waitingRows = [];
-    for (const job of lists[this.tab]) {
+    for (const job of lists.queued) {
       const wait = blockedBy(job, data.jobs, data.state);
-      const row = this.jobRow(t, job, this.tab, wait);
+      const row = this.jobRow(t, job, "queued", wait);
       (wait ? waitingRows : rows).push(row);
     }
     if (waitingRows.length) {
       rows.push(div().id("waiting-head").px(8).pt(8).pb(2).text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"));
       rows.push(...waitingRows);
     }
-    if (this.tab === "pending") {
-      for (const p of data.problems) {
-        rows.push(h_flex().id(`problem-${p.id}`).h(24).px(8).gap(8).items_center().tooltip(`jobs/${p.id}.json: ${p.error}`)
-          .child(dot("red", 7)).child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(`${p.id}.json: ${p.error}`)));
-      }
-      if (!rows.length) rows.push(div().id("empty").px(8).py(4).text_size(12).text_color(t.dim)
-        .child(data.loaded ? "Nothing waits for approval. Click + to add a job." : "Loading…"));
-    } else {
-      if (!lists.ready.length) rows.push(div().id("empty").px(8).py(4).text_size(12).text_color(t.dim)
-        .child("Approved jobs wait here until you launch them."));
-      if (lists.launched.length) {
-        rows.push(div().id("launched-head").px(8).pt(8).pb(2).text_size(11).font_medium().text_color(t.dim).child("Launched"));
-        for (const job of lists.launched.slice(0, 5)) rows.push(this.jobRow(t, job, "launched"));
-      }
+    for (const p of data.problems) {
+      rows.push(h_flex().id(`problem-${p.id}`).h(24).px(8).gap(8).items_center().tooltip(`jobs/${p.id}.json: ${p.error}`)
+        .child(dot("red", 7)).child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(`${p.id}.json: ${p.error}`)));
     }
-
-    return v_flex().id("root").on_size_change((size, cx) => this.resized(size, cx))
+    if (!rows.length) rows.push(div().id("empty").px(8).py(4).text_size(12).text_color(t.dim)
+      .child(data.loaded ? "Queue is empty. Click + to add a job." : "Loading…"));
+    if (lists.launched.length) {
+      rows.push(div().id("launched-head").px(8).pt(8).pb(2).text_size(11).font_medium().text_color(t.dim).child("Launched"));
+      for (const job of lists.launched.slice(0, 5)) rows.push(this.jobRow(t, job, "launched"));
+    }
+    return v_flex().id("root")
       .size_full().min_h(0).bg(t.chrome).border_t(1).border_color(t.border).text_size(13)
       .child(header)
-      .child(h_flex().px(16).pb(4).gap(8).items_center()
-        .child(div().flex_1().text_size(11).text_color(t.dim)
-          .child(this.tab === "pending" ? "Pending launch approval" : "Approved jobs"))
-        .when(this.tab === "ready" && scheduled().length > 0, (el) => el.child(
+      .when(hasScheduled(), (el) => el.child(h_flex().px(16).pb(4).justify_end().child(
           div().id("pause").text_size(11).cursor_pointer()
             .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
             .tooltip(data.state.paused ? "Scheduled launches are paused. Click to resume." : "Pause scheduled launches")
@@ -792,21 +770,10 @@ export default class UsageQueue extends View {
       .child(v_flex().id("rows").flex_1().min_h(0).px(8).pb(8).overflow_y_scrollbar().children(rows));
   }
 
-  resized(size, cx) {
-    if (size.width === this.width) return;
-    this.width = size.width;
-    cx.notify();
-  }
-
   // ---------- Job dialog ----------
 
   initJob(cx) {
     loadIfNeeded(cx);
-    this.estimator = null; // "agent/model" picked to run the estimate
-    this.route = null; // the proposal as edited here
-    this.after = undefined; // "Wait for" as chosen here before approval (undefined: the file's)
-    this.show = null; // "prompt" | "reply": the text box under the estimate
-    this.preview = ""; // the prompt an estimate would send, before any run
     // The elapsed time while this job's estimate runs: redraw once a second, only then.
     if (!checking()) {
       cx.timer.every(1000, (cx) => {
@@ -818,10 +785,11 @@ export default class UsageQueue extends View {
 
   togglePrompt(job, cx) {
     this.show = this.show === "prompt" ? null : "prompt";
-    if (this.show === "prompt" && !lastRuns.get(job.id)?.prompt && !this.preview) {
+    if (this.show === "prompt" && !currentVersion(job, lastRuns.get(job.id))?.prompt && !this.preview) {
       this.preview = "Reading the repository…";
       cx.spawn(async (cx) => {
-        this.preview = await buildEstimatePrompt(job, data.catalog, lightLines());
+        const preview = await buildEstimatePrompt(job, data.catalog, lightLines());
+        if (this.editHash === job.hash) this.preview = preview;
         cx.notify();
       });
     }
@@ -835,20 +803,36 @@ export default class UsageQueue extends View {
 
   currentRoute(job) {
     const s = jobState(job.id);
-    if (this.route) return this.route;
-    if (s.approval?.hash === job.hash) return s.approval.route;
-    const estimate = s.estimate?.hash === job.hash ? s.estimate : null;
-    if (s.proposal && estimate) return s.proposal;
-    // No estimate: start from the defaults, on the agent with the most allowance to spare.
-    return pinnedRoute(data.catalog, job)
+    const route = this.route
+      ?? (currentVersion(job, s.estimate) ? s.proposal : null)
+      ?? pinnedRoute(data.catalog, job)
       ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged);
+    return route && { ...route, size: this.size ?? route.size ?? "m" };
   }
 
-  /** The job a pending job will wait for once approved: chosen here, else its file's, if that
-   *  job can still be waited for. */
-  pendingAfter(job) {
+  /** The dependency selected in the dialog, or the one from the file. */
+  draftAfter(job) {
     const after = this.after === undefined ? job.after : this.after;
     return after && canWaitFor(job, data.jobs, data.state).some((o) => o.id === after) ? after : null;
+  }
+
+  async finishAllocation(cx, job, route, after, pr, action, overlay) {
+    if (jobById(job.id)?.hash !== job.hash || allocationFor(job, data.state) ||
+      running.allocations.has(job.id) || running.deletions.has(job.id)) return;
+    running.allocations.add(job.id);
+    changed();
+    try {
+      await saveAllocation(job, route, action === "auto" || (action === "save" && job.launch === "auto"), pr, after);
+    } catch (e) {
+      notify({ title: `Couldn't save allocation for ${job.title}`, body: String(e?.message ?? e), level: "error" });
+      return;
+    } finally {
+      running.allocations.delete(job.id);
+      changed();
+    }
+    const launchNow = action === "launch" || (action === "auto" && !data.state.paused &&
+      !blockedBy(job, data.jobs, data.state) && jobLight(job).light !== "red");
+    if (!launchNow || requestLaunch(job, cx, action === "auto")) closeOverlay(overlay);
   }
 
   /** A launched job's "finished" line: how it finishes, and Mark finished for when you say so. */
@@ -856,7 +840,7 @@ export default class UsageQueue extends View {
     const launched = jobState(job.id).launched;
     const marked = Boolean(launched?.markedFinishedAt);
     const finished = isFinished(jobState(job.id));
-    const waiting = data.jobs.filter((j) => j.id !== job.id && (jobState(j.id).approval?.after ?? j.after) === job.id);
+    const waiting = data.jobs.filter((j) => j.id !== job.id && waitFor(j, data.state) === job.id);
     const text = marked ? `You marked it finished ${ago(launched.markedFinishedAt)}.`
       : finished ? "Finished."
         : launched?.pr && launched.pr.mode !== "off" ? "Finished once its PR is merged." : "Finished once its agent has worked and stopped.";
@@ -873,14 +857,13 @@ export default class UsageQueue extends View {
   }
 
   estimateSection(t, job) {
-    const s = jobState(job.id);
-    const est = running.estimates.get(job.id);
+    const run = running.estimates.get(job.id);
+    const est = currentVersion(job, run);
     const { choices, suggested } = estimatorChoices(data.catalog, data.pools, data.judged, job.agents);
     const key = (c) => `${c.agent.id}/${c.model.id}`;
     const picked = choices.find((c) => key(c) === this.estimator && c.usable) ?? suggested;
-    const els = [this.section(t, s.estimate?.hash === job.hash ? "1 · Estimate (done; run again to refresh)" : "1 · Estimate model and effort (optional)")];
-    els.push(div().pb(6).text_size(12).text_color(t.muted)
-      .child("A big model reads the job and recommends a model, effort and size for each agent. It uses allowance too, so it runs only when you click. Or skip it and choose below."));
+    const els = [div().pt(6).pb(6).text_size(12).text_color(t.muted)
+      .child("The estimate uses allowance to suggest a size, model and effort.")];
     els.push(v_flex().gap(2).children(choices.map((c) => {
       const selected = picked && key(c) === key(picked);
       const j = c.judgement ?? { light: "red", reason: "No allowance reading" };
@@ -895,17 +878,19 @@ export default class UsageQueue extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(j.reason))
         .when(suggested && key(c) === key(suggested), (el) => el.child(div().text_size(11).text_color(LIGHT.green).child("Suggested")));
     })));
-    const busy = est && !est.failed;
-    const lastRun = lastRuns.get(job.id);
+    const busy = run && !run.failed;
+    const lastRun = currentVersion(job, lastRuns.get(job.id));
     els.push(h_flex().pt(8).gap(8).items_center()
-      .child(button(t, "run-estimate", busy ? `Estimating with ${est.label}…` : picked ? `Estimate with ${picked.agent.name} ${picked.model.label}` : "No big model has allowance",
+      .child(button(t, "run-estimate", busy ? `Estimating with ${run.label}…` : picked ? `Estimate with ${picked.agent.name} ${picked.model.label}` : "No big model has allowance",
         "secondary", (_e, cx) => {
           this.show = null;
-          ask({ type: "estimate", id: job.id, agentId: picked.agent.id, modelId: picked.model.id }, cx);
+          this.route = null;
+          this.size = null;
+          ask({ type: "estimate", id: job.id, hash: job.hash, agentId: picked.agent.id, modelId: picked.model.id }, cx);
         }, busy || !picked))
       .when(busy, (el) => el
         .child(div().text_size(12).text_color(t.muted).frames(SPINNER, 90))
-        .child(div().text_size(12).text_color(t.muted).child(elapsed(Date.now() - est.startedAt))))
+        .child(div().text_size(12).text_color(t.muted).child(elapsed(Date.now() - run.startedAt))))
       .child(div().flex_1())
       .child(chip(t, "show-prompt", this.show === "prompt" ? "Hide prompt" : "Show prompt", this.show === "prompt",
         (_e, cx) => this.togglePrompt(job, cx)))
@@ -914,10 +899,6 @@ export default class UsageQueue extends View {
       .when(Boolean(lastRun?.log && !busy), (el) => el.child(chip(t, "open-log", "Open log", false,
         (_e, cx) => cx.spawn(async () => exec("open", [lastRun.log])), lastRun.log))));
     if (est?.failed) els.push(div().pt(8).text_size(12).text_color(LIGHT.red).child(est.error));
-    if (busy) {
-      els.push(div().pt(6).text_size(11.5).text_color(t.dim)
-        .child(`${est.label} answers in one go when it's done: the reply and a log show here then. Closing this dialog doesn't stop it.`));
-    }
     if (this.show === "prompt") els.push(this.textBox(t, "prompt-text", lastRun?.prompt || this.preview));
     if (this.show === "reply" && lastRun) {
       const text = [lastRun.reply || "(no reply)", lastRun.stderr?.trim() ? `\n--- ${lastRun.by.label} errors\n${lastRun.stderr.trim()}` : ""].join("");
@@ -926,14 +907,12 @@ export default class UsageQueue extends View {
     return els;
   }
 
-  proposalSection(t, job, route) {
+  allocationSection(t, job, route) {
     const s = jobState(job.id);
-    const estimate = s.estimate?.hash === job.hash ? s.estimate : null;
+    const estimate = currentVersion(job, s.estimate);
     const pinned = pinnedRoute(data.catalog, job);
     const options = pinned && !estimate ? [pinned] : routeOptions(data.catalog, job, estimate);
-    const els = [this.section(t, estimate ? "2 · Proposal: approve as is, or adjust"
-      : pinned ? "2 · Set in the job file: approve as is, or adjust"
-        : "2 · Choose the agent, model and effort, or estimate above")];
+    const els = [this.section(t, "Allocation")];
     els.push(v_flex().gap(4).children(options.map((r) => {
       const selected = route?.agent === r.agent;
       const { judgement: j } = routeStatus(data.catalog, selected ? route : r, data.pools, data.judged);
@@ -943,7 +922,6 @@ export default class UsageQueue extends View {
         .child(h_flex().gap(8).items_center()
           .child(dot(j.light))
           .child(div().text_size(12.5).font_medium().text_color(t.foreground).child(routeText(selected ? route : r)))
-          .child(div().text_size(11.5).text_color(t.dim).child(`size ${(selected ? route : r).size}`))
           .when(estimate?.recommended === r.agent, (el) => el.child(div().text_size(11).text_color(t.muted).child("recommended"))))
         .when(Boolean(r.why), (el) => el.child(div().text_size(11.5).text_color(t.muted).child(r.why)))
         .child(div().text_size(11.5).text_color(t.dim).child(`${LIGHT_WORD[j.light]}: ${j.reason}`));
@@ -970,11 +948,21 @@ export default class UsageQueue extends View {
         .child(div().text_size(14).child(data.loaded ? "This job is gone." : "Loading…"))
         .child(h_flex().child(div().flex_1()).child(button(t, "close", "Close", "secondary", () => closeOverlay(p.overlay))));
     }
+    if (this.editHash !== job.hash) {
+      this.editHash = job.hash;
+      this.route = this.size = this.estimator = this.show = null;
+      this.after = this.pr = undefined;
+      this.preview = "";
+      this.showEstimator = false;
+    }
     const s = jobState(job.id);
-    const approved = s.approval?.hash === job.hash;
-    const launched = approved && s.launched?.hash === job.hash;
-    const route = this.currentRoute(job);
+    const allocation = allocationFor(job, data.state);
+    const launched = allocation && currentVersion(job, s.launched);
+    const route = allocation?.route ?? this.currentRoute(job);
     const status = route ? routeStatus(data.catalog, route, data.pools, data.judged).judgement : null;
+    const after = allocation ? waitFor(job, data.state) : this.draftAfter(job);
+    const wait = blockedBy(job, data.jobs, data.state, after);
+    const pr = allocation?.pr ?? this.pr ?? job.pr;
 
     const body = [
       h_flex().items_center().gap(8)
@@ -987,18 +975,17 @@ export default class UsageQueue extends View {
         .bg(t.background).text_size(12).text_color(t.foreground).child(job.prompt),
     ];
 
-    if (approved) {
-      body.push(this.section(t, launched ? "Launched" : "Approved: ready to launch"));
+    if (allocation) {
+      body.push(this.section(t, launched ? "Launched" : "Allocation"));
       body.push(h_flex().gap(8).items_center()
         .child(dot(status.light))
         .child(div().text_size(12.5).font_medium().child(routeText(route)))
-        .child(div().text_size(11.5).text_color(t.dim).child(`size ${route.size ?? "m"}`)));
+        .child(div().text_size(11.5).text_color(t.dim).child(SIZE_LABEL[route.size] ?? "Medium")));
       body.push(div().pt(4).text_size(12).text_color(t.muted).child(`${LIGHT_WORD[status.light]}: ${status.reason}`));
-      if (!launched && s.approval.auto) {
-        const waiting = blockedBy(job, data.jobs, data.state);
+      if (!launched && allocation.auto) {
         body.push(div().pt(8).text_size(12).text_color(t.accent).child(data.state.paused
           ? "Auto: scheduled launches are paused."
-          : waiting ? `Auto: launches by itself once ${waiting.job.title} is finished and there's allowance.`
+          : wait ? `Auto: launches by itself once ${wait.job.title} is finished and there's allowance.`
           : status.light === "red"
             ? `Auto: launches by itself when there's allowance${whenOpen(status) ? ` (next reset ${whenOpen(status)})` : ""}.`
             : "Auto: launches within a minute."));
@@ -1022,16 +1009,22 @@ export default class UsageQueue extends View {
         body.push(...this.finishedSection(t, job));
       }
     } else {
-      if (!pinnedRoute(data.catalog, job)) body.push(...this.estimateSection(t, job));
-      if (route) body.push(...this.proposalSection(t, job, route));
+      body.push(this.section(t, "Size"));
+      body.push(h_flex().gap(6).flex_wrap().items_center()
+        .children(SIZES.map((size) => chip(t, `size-${size}`, SIZE_LABEL[size], route?.size === size,
+          (_e, cx) => { this.size = size; cx.notify(); }, SIZE_TEXT[size])))
+        .child(chip(t, "toggle-estimate", this.showEstimator ? "Hide estimate" : "Estimate with a model", this.showEstimator,
+          (_e, cx) => { this.showEstimator = !this.showEstimator; cx.notify(); })));
+      if (this.showEstimator) body.push(...this.estimateSection(t, job));
+      if (route) body.push(...this.allocationSection(t, job, route));
+      else body.push(div().pt(8).text_size(12).text_color(t.dim).child("Choose a job agent with a model and effort in the catalog."));
     }
-    // Waiting for another job: it launches only once that one is finished.
-    if (approved && !launched) {
-      const after = s.approval.after ?? null;
-      const wait = blockedBy(job, data.jobs, data.state);
-      const options = canWaitFor(job, data.jobs, data.state);
+    if (!launched) {
       body.push(this.section(t, "Wait for"));
-      body.push(waitChips(t, after, options, (id, cx) => cx.spawn(async () => setAfter(job, id))));
+      body.push(waitChips(t, after, canWaitFor(job, data.jobs, data.state), (id, cx) => {
+        if (allocation) cx.spawn(async () => setAfter(job, id));
+        else { this.after = id; cx.notify(); }
+      }));
       body.push(div().pt(6).text_size(11.5).text_color(wait ? t.accent : t.dim).child(wait
         ? `Waits for ${wait.job.title}, which ${wait.why}. Then it starts from the remote's latest, so its work goes on top.`
         : after ? "What it waited for is finished: it can launch." : "Launches on its own terms. Pick a job to launch this one after it's finished (PR merged, or the agent done)."));
@@ -1040,59 +1033,56 @@ export default class UsageQueue extends View {
           (_e, cx) => cx.spawn(async () => { await markFinished(wait.job, true); cx.notify(); }),
           "If it's done as far as you're concerned (you merged it, or it's good enough), this one can launch.")));
       }
-    }
-    // Before approval, "Wait for" is chosen here and goes with the approval.
-    if (!approved) {
-      const after = this.pendingAfter(job);
-      body.push(this.section(t, "Wait for"));
-      body.push(waitChips(t, after, canWaitFor(job, data.jobs, data.state), (id, cx) => { this.after = id; cx.notify(); }));
-      body.push(div().pt(6).text_size(11.5).text_color(t.dim).child(after
-        ? `Launches only once ${jobById(after)?.title ?? after} is finished (PR merged, or the agent done).`
-        : "Launches on its own terms. Pick a job to launch this one after it's finished."));
-    }
-    // When it's done: a PR, and its reviews. Chosen before launch.
-    if (!launched) {
-      const current = approved ? s.approval.pr ?? job.pr : (this.pr ??= job.pr);
       body.push(this.section(t, "When it's done"));
       body.push(h_flex().gap(6).items_center().children(["off", "review", "merge"].map((m) => chip(t, `pr-${m}`, PR_MODE_TEXT[m],
-        current === m, (_e, cx) => {
-          if (approved) cx.spawn(async () => setPrMode(job, m));
+        pr === m, (_e, cx) => {
+          if (allocation) cx.spawn(async () => setPrMode(job, m));
           else { this.pr = m; cx.notify(); }
         }))));
-      body.push(div().pt(6).text_size(11.5).text_color(t.dim).child(current === "off"
+      body.push(div().pt(6).text_size(11.5).text_color(t.dim).child(pr === "off"
         ? "The agent just does the work."
-        : `The agent opens a PR. The queue watches it: review comments go back to the agent (up to ${MAX_ROUNDS} rounds, each ending in "@codex review")${current === "merge" ? ", and a 👍 merges it" : ", and you merge it"}.`));
+        : `The agent opens a PR. The queue watches it: review comments go back to the agent (up to ${MAX_ROUNDS} rounds, each ending in "@codex review")${pr === "merge" ? ", and a 👍 merges it" : ", and you merge it"}.`));
     }
 
     const launching = running.launches.has(job.id);
+    const busy = launching || running.allocations.has(job.id) || running.deletions.has(job.id);
     const footer = h_flex().pt(18).gap(8).items_center()
       .child(button(t, "delete", "Delete job", "danger", (_e, cx) => cx.spawn(async () => {
         await removeJob(job.id);
         closeOverlay(p.overlay);
-      })))
+      }), busy))
       .child(div().flex_1());
-    if (approved) {
-      footer.child(button(t, "unapprove", launched ? "Queue again" : "Unapprove", "secondary",
-        (_e, cx) => cx.spawn(async () => { this.route = null; await unapprove(job); cx.notify(); })));
-      if (launched) {
-        const space = agentSpace(job);
-        footer.child(button(t, "go-to-agent", space ? "Go to agent" : "Agent closed", "primary",
-          () => { if (space) { run("space.select", { id: space.id }); closeOverlay(p.overlay); } }, !space));
-      }
-      if (!launched) {
-        footer.child(s.approval.auto
-          ? button(t, "auto", "Cancel Auto", "secondary", (_e, cx) => cx.spawn(async () => { await setAuto(job, false); cx.notify(); }))
-          : button(t, "auto", "Auto", "secondary", (_e, cx) => { if (autoLaunch(job, cx)) closeOverlay(p.overlay); }, launching));
-        const waiting = Boolean(blockedBy(job, data.jobs, data.state));
-        footer.child(button(t, "launch", launching ? "Launching…" : waiting ? "Waiting" : status.light === "red" ? "Not yet" : "Launch", "primary",
-          (_e, cx) => { if (ask({ type: "launch", id: job.id }, cx)) closeOverlay(p.overlay); }, launching || waiting || status.light === "red"));
-      }
+    if (allocation) {
+      footer.child(button(t, "clear-allocation", launched ? "Queue again" : "Clear allocation", "secondary",
+        (_e, cx) => cx.spawn(async () => {
+          this.route = null;
+          this.size = null;
+          this.after = undefined;
+          this.pr = undefined;
+          await clearAllocation(job);
+          cx.notify();
+        }), busy));
+    }
+    if (launched) {
+      const space = agentSpace(job);
+      footer.child(button(t, "go-to-agent", space ? "Go to agent" : "Agent closed", "primary",
+        () => { if (space) { run("space.select", { id: space.id }); closeOverlay(p.overlay); } }, !space));
     } else {
-      footer.child(button(t, "approve", "Approve", "primary", (_e, cx) => cx.spawn(async () => {
-        // Approving never launches; "launch": "auto" in the file starts it on Auto.
-        await approve(job, { size: "m", why: "", ...route }, job.launch === "auto", this.pr ?? job.pr, this.pendingAfter(job));
-        closeOverlay(p.overlay);
-      }), !route));
+      const finish = (action, cx) => cx.spawn(async (cx) => this.finishAllocation(cx, job, route, after, pr, action, p.overlay));
+      if (!allocation) {
+        footer.child(button(t, "save-allocation", "Save allocation", "secondary", (_e, cx) => finish("save", cx), busy || !route));
+      }
+      footer.child(allocation?.auto
+        ? button(t, "auto", "Cancel Auto", "secondary", (_e, cx) => cx.spawn(async () => { await setAuto(job, false); cx.notify(); }), busy)
+        : button(t, "auto", "Auto", "secondary", (_e, cx) => {
+          if (!allocation) finish("auto", cx);
+          else if (autoLaunch(job, cx)) closeOverlay(p.overlay);
+        }, busy || !route));
+      footer.child(button(t, "launch", launching ? "Launching…" : wait ? "Waiting" : status?.light === "red" ? "Not yet" : "Launch", "primary",
+        (_e, cx) => {
+          if (!allocation) finish("launch", cx);
+          else if (requestLaunch(job, cx)) closeOverlay(p.overlay);
+        }, busy || !route || Boolean(wait) || status?.light === "red"));
     }
     // The title and its details stay at the top, the buttons at the bottom; the rest scrolls.
     const head = body.splice(0, 2);

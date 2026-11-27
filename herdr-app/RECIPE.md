@@ -1,8 +1,8 @@
 # Usage Queue
 
 Queue coding-agent jobs in the sidebar and run them on whichever subscription has allowance to
-spare. A big model recommends the model and thinking effort for each job; you approve it, then
-click **Launch**, or **Auto** to have it launch by itself once there's allowance. Each job runs
+spare. Choose a size, agent, model and effort, or ask a big model to estimate. Click
+**Launch**, or **Auto** to have it launch by itself once there's allowance. Each job runs
 in a new git worktree, branched from the repo's latest commit on its remote, in a background
 space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-usage-monitor).
 
@@ -13,18 +13,10 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **A sidebar block** below the Spaces / Agents (/ Context) lists, above Saved Prompts when
   there is one. It's a weighted share of the sidebar (`weight: 0.35`, `min: 90`), so it resizes
   like the lists. `chrome` background, 1px `border` line above.
-- **Header**, 34px, 16px left padding, 8px right: `Usage Queue` at 11.5px medium in `dim`,
-  filling the row; then two view icons and `+`:
-  - **Pending Launch Approval**: `mods/workspace-chrome/clock.svg`, 14px, and its count.
-  - **Ready to Launch**: `mods/workspace-chrome/circle-check.svg`, 14px, and its count.
-
-  Each is 26px tall, 8px side padding, 6px gap, radius 6, count at 11.5px medium; the chosen
-  one on `selected` with `foreground`, the other `muted` (a zero count in `dim`). The tooltip
-  names the view. `+` is a 24px square, radius 6, `plus.svg` at 14px in `dim` (`hover` behind
-  it): **Add a job**, or "continue your draft" when one is saved.
-- **Below the header**, 16px side padding, 11px `dim`: "Pending launch approval" or "Ready to
-  launch". In Ready to Launch, when any job is on Auto, a "Pause auto" switch at the right
-  (`dim`, `foreground` on hover); while paused, "Paused · resume" in the yellow light colour.
+- **Header**, 34px, 16px left padding, 8px right: `Launch queue` at 11.5px medium in `dim`
+  and an **Add a job** button. `+` is a 24px square, radius 6, with `plus.svg` at 14px.
+  When any job is on Auto, a "Pause auto" switch sits below the header at the right.
+  While paused it reads "Paused · resume" in yellow.
 - **Lights**, 16px side padding, 12px apart: one per coding agent that has a reading (Claude,
   Codex, Antigravity): an 8px dot and its name at 11.5px in `muted`. Hover: the agent's verdict
   and each of its pools' reasons. Fixed colours, as Usage Monitor's: green `#2fbf71`, yellow
@@ -33,29 +25,28 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **Rows**, 8px side padding, scrolling: 28px tall, radius 7, 8px gaps, `hover` behind them. A
   7px dot (the job's route's light, else the best of its agents'), the job's title at 12.5px in
   `foreground` (cut with `…`), and on the right:
-  - **Pending**: "Estimate", "Review" (an estimate or a pinned model is in), "Failed" in red, or
-    a spinner (`.frames`) while estimating; 11.5px.
-  - **Ready**: two buttons, 22px tall, 7px side padding, radius 5, 11.5px medium on `raised`:
+  - **Needs allocation** in `dim` at 11.5px, or a spinner while estimating.
+  - **Saved allocation** shows two buttons, 22px tall, 7px side padding, radius 5, 11.5px medium on `raised`:
     **Auto** and **Launch**. Launch is `dim` and does nothing on red. A job on Auto shows one
     highlighted button instead, `accent` text and border on `selected`: "Auto in 2h 10m" (the
     time to the next reset), "Auto now", or "Paused".
   - Job files that can't be read show as `dim` rows with a red dot and the error.
-  - Under Ready, a "Launched" heading (11px medium `dim`) and the last five launched jobs in
+  - Below the queue, a "Launched" heading (11px medium `dim`) and the last five launched jobs in
     `muted` with how long ago.
-- **Narrow sidebar** (under 160px): only the two view icons, stacked.
 - **The job dialog** (580px, `popover`), opened by clicking a row: the title (15px semibold),
   repo · agents · priority · file, where it starts from ("the remote's latest default branch
   (fetched), taken when it launches"), and the prompt in a scrolling box. Then:
-  - **1 · Estimate**: the big models that can run an estimate, each a 30px row with its light,
+  - **Size** offers Small, Medium and Large, plus **Estimate with a model**.
+  - **Estimate with a model** expands the list of big models, each a 30px row with its light,
     name and reason, the suggested one marked "Suggested" in green; red ones at half opacity
     and not clickable. "Estimate with …" runs it; while it runs, a spinner and the seconds.
     **Show prompt** shows what it sends; after a run, **Show reply** (the raw reply and the
     CLI's errors) and **Open log**. A failure shows in red.
-  - **2 · Proposal**: one card per agent from the estimate (light, agent · model · effort,
-    size, "recommended", the reason, and its allowance), and Model and Effort chips (24px,
+  - **Allocation** shows the agent routes (light, agent · model · effort, recommendation,
+    reason and allowance), and Model and Effort chips (24px,
     radius 6) for the chosen one.
-  - Footer: **Delete job** (red text), then **Approve**; for an approved job, **Unapprove**,
-    **Auto** (or **Cancel Auto**) and **Launch**.
+  - Footer buttons include **Delete job**, **Save allocation**, **Auto** and **Launch**.
+    Saved allocations can be cleared, and scheduled jobs show **Cancel Auto**.
 - **The add dialog** (560px): Title, Prompt (150px), Repository (the focused pane's folder, or
   **Choose…**), agent chips (not-installed ones marked), Priority chips (1 high, 2 normal,
   3 low), **Clear** when anything is typed, **Close** and **Add to queue** (⌘↵).
@@ -76,8 +67,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   when Usage Monitor's readout isn't polling; the bridge still asks providers only on its own
   schedule (3 / 15 / 60 min by activity, and just after a reset).
 - **Jobs** are `~/.config/herdr-app/usage-queue/jobs/*.json`; a folder watch picks up new and
-  edited ones at once. Approval stores a hash of the file: editing it sends the job back to
-  Pending Launch Approval.
+  edited ones at once. An allocation stores a hash of the file. Editing the file restores the
+  **Needs allocation** marker and clears launch eligibility until the allocation is saved again.
 - **Estimate**: one-shot, read-only, in the job's repo, with the chosen big model at high
   effort: `claude -p --permission-mode plan --output-format json`, `codex exec --sandbox
   read-only --ephemeral`, or `agy --mode plan --output-format json --print=<prompt>`. The
@@ -107,8 +98,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   in the worktree if the old one is gone. New feedback after round 3, a failed merge, or a day
   with nothing happening ends the watch, with a notification. Launched rows show "PR #12 ·
   round 1/3", "Merged #12", "👍 #12" or "Needs you #12".
-- **Wait for** (`"after"`, or "Wait for" in a Ready job's dialog: Nothing, or any unfinished
-  job that doesn't itself wait on this one): Launch is disabled ("Waiting") and Auto only
+- **Wait for** (`"after"`, or "Wait for" in the job dialog): Nothing, or any unfinished
+  job that doesn't itself wait on this one. Launch is disabled ("Waiting") and Auto only
   schedules until that job is finished: its PR merged (a PR approved in review mode stays
   watched until you merge it), or, without a PR, its agent worked and then went idle or away.
   The row adds "· after <job>" in `dim`. A deleted job doesn't hold anything up.
@@ -163,10 +154,10 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - The block shows under the lists with a light per signed-in agent; hovering one shows each
   pool's reason.
 - **+** adds a job; Esc keeps the draft and **+** brings it back.
-- A new file in `usage-queue/jobs/` shows in Pending Launch Approval within a second.
+- A new file in `usage-queue/jobs/` shows in Launch queue with **Needs allocation**.
 - **Estimate** with a suggested big model fills the proposal; **Show reply** and **Open log**
   show what came back.
-- **Approve** moves the job to Ready to Launch; editing its file moves it back.
+- **Save allocation** reveals launch controls in the same row. Editing the file restores the marker.
 - **Launch** makes `queue/<job>-<time>` from `origin/<default branch>` and the agent appears in
   a new space, in Agents, and in Context after its first answer.
 - **Auto** on a red job shows "Auto in …" and launches by itself after the reset; on a green
