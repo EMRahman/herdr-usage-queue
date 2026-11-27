@@ -17,11 +17,11 @@ import {
   setShared, shared, spaces, theme, watchFolder,
 } from "herdr";
 import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf } from "./catalog.js";
-import { fetchPR, findPR, mergePR, myLogin } from "./github.js";
+import { fetchPR, findPR, mergePR, myLogin, prState } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
-  agentLights, blockedBy, canWaitFor, classify, dueToLaunch, routeOptions, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
+  agentLights, blockedBy, canWaitFor, isFinished, classify, dueToLaunch, routeOptions, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
 } from "./queue.js";
 import { judgeAll, poolsFromReport } from "./rule.js";
 import {
@@ -40,6 +40,11 @@ const PR_POLL_MS = 2 * 60_000;
 /** A PR watch with nothing happening for this long stops. */
 const WATCH_FOR_MS = 24 * 3_600_000;
 const PR_DONE = new Set(["merged", "closed", "needs-you", "ended"]);
+/** A PR the queue stopped working on but that's still open: checked now and then for a merge,
+ *  so a job waiting on it starts when you merge it yourself. */
+const PR_LATE = new Set(["needs-you", "ended"]);
+const LATE_POLL_MS = 10 * 60_000;
+const LATE_FOR_MS = 14 * 24 * 3_600_000;
 const PR_MODE_TEXT = { off: "No PR", review: "Open a PR", merge: "PR + merge on 👍" };
 const BUSY_MS = 50_000;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -255,6 +260,7 @@ async function watchPRs() {
     const launched = jobState(job.id).launched;
     if (launched && !launched.pr) await trackFinish(job.id, launched);
     const w = launched?.pr;
+    if (w && PR_LATE.has(w.phase)) await lateCheck(job, launched, w, now);
     if (!w || PR_DONE.has(w.phase)) continue;
     const id = job.id;
     const terminal = (w.terminal && agents().some((a) => a.address === w.terminal)) ? w.terminal : agentIn(launched.folder);
@@ -331,6 +337,37 @@ async function watchPRs() {
       await patchWatch(id, { error: String(e?.message ?? e) });
     }
   }
+}
+
+/** A PR the queue stopped working on: merged or closed since, by you? */
+async function lateCheck(job, launched, w, now) {
+  if (!w.number || now - (w.changedAt ?? launched.at) > LATE_FOR_MS) return;
+  if (now - (polledAt.get(job.id) ?? 0) < LATE_POLL_MS) return;
+  polledAt.set(job.id, now);
+  try {
+    const state = await prState(launched.folder, w.number);
+    if (state === "OPEN") return;
+    const phase = state === "MERGED" ? "merged" : "closed";
+    await patchWatch(job.id, { phase, changedAt: now });
+    await record({ type: `pr-${phase}`, job: job.id, number: w.number, late: true });
+    if (phase === "merged") {
+      const waiting = data.jobs.filter((j) => (jobState(j.id).approval?.after ?? j.after) === job.id && !jobState(j.id).launched);
+      if (waiting.length) notify({ title: `PR #${w.number} merged: ${job.title}`, body: `${waiting.map((j) => j.title).join(", ")} can launch now.`, level: "info" });
+    }
+  } catch {}
+}
+
+/** Marks a launched job finished by hand (or takes that back), so jobs waiting on it can launch.
+ *  Its PR, if any, is still watched as before. */
+async function markFinished(job, on) {
+  data.state = await updateState((s) => {
+    const launched = s.jobs[job.id]?.launched;
+    if (!launched) return;
+    if (on) launched.markedFinishedAt = Date.now();
+    else delete launched.markedFinishedAt;
+  });
+  await record({ type: on ? "marked-finished" : "unmarked-finished", job: job.id });
+  changed();
 }
 
 /** A launched job without a PR is finished once its agent has worked and stopped (or is gone):
@@ -767,6 +804,23 @@ export default class UsageQueue extends View {
       ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged);
   }
 
+  /** A launched job's "finished" line: how it finishes, and Mark finished for when you say so. */
+  finishedSection(t, job) {
+    const launched = jobState(job.id).launched;
+    const marked = Boolean(launched?.markedFinishedAt);
+    const finished = isFinished(jobState(job.id));
+    const waiting = data.jobs.filter((j) => j.id !== job.id && (jobState(j.id).approval?.after ?? j.after) === job.id);
+    const text = marked ? `You marked it finished ${ago(launched.markedFinishedAt)}.`
+      : finished ? "Finished."
+        : launched?.pr && launched.pr.mode !== "off" ? "Finished once its PR is merged." : "Finished once its agent has worked and stopped.";
+    return [h_flex().pt(10).gap(8).items_center()
+      .child(div().flex_1().text_size(11.5).text_color(finished ? LIGHT.green : t.dim)
+        .child(`${text}${waiting.length ? ` Waiting on it: ${waiting.map((j) => j.title).join(", ")}.` : ""}`))
+      .when(marked || !finished, (el) => el.child(chip(t, "mark-finished", marked ? "Unmark finished" : "Mark finished", marked,
+        (_e, cx) => cx.spawn(async () => { await markFinished(job, !marked); cx.notify(); }),
+        marked ? "Jobs waiting on it wait again (unless they've launched)." : "Jobs waiting on it can launch now. Its PR, if any, is still watched.")))];
+  }
+
   section(t, title) {
     return div().pt(16).pb(6).text_size(11.5).font_medium().text_color(t.dim).child(title);
   }
@@ -918,6 +972,7 @@ export default class UsageQueue extends View {
             : "Waiting for the agent to open the PR."));
           if (w.error) body.push(div().pt(4).text_size(11.5).text_color(LIGHT.yellow).child(w.error));
         }
+        body.push(...this.finishedSection(t, job));
       }
     } else {
       if (!pinnedRoute(data.catalog, job)) body.push(...this.estimateSection(t, job));
@@ -936,6 +991,11 @@ export default class UsageQueue extends View {
       body.push(div().pt(6).text_size(11.5).text_color(wait ? t.accent : t.dim).child(wait
         ? `Waits for ${wait.job.title}, which ${wait.why}. Then it starts from the remote's latest, so its work goes on top.`
         : after ? "What it waited for is finished: it can launch." : "Launches on its own terms. Pick a job to launch this one after it's finished (PR merged, or the agent done)."));
+      if (wait && jobState(wait.job.id).launched) {
+        body.push(h_flex().pt(6).child(chip(t, "mark-after-finished", `Mark ${wait.job.title} finished`, false,
+          (_e, cx) => cx.spawn(async () => { await markFinished(wait.job, true); cx.notify(); }),
+          "If it's done as far as you're concerned (you merged it, or it's good enough), this one can launch.")));
+      }
     }
     // When it's done: a PR, and its reviews. Chosen before launch.
     if (!launched) {

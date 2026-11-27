@@ -43,7 +43,11 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    launch, by Launch or Auto, until that job is finished: its PR merged, or, without a PR, its
    agent done. Launches fetch the remote's latest first, so the work goes on top of what was
    just merged. With Auto on, it launches by itself once both the job it waits for is finished
-   and there's allowance. Its row reads "… · after <job>".
+   and there's allowance. Its row reads "… · after <job>". A PR the queue stopped working on
+   (it needs you, or nothing happened for a day) is still checked every 10 minutes for two
+   weeks, so merging it yourself starts the jobs waiting on it. To let them go without a merge,
+   click **Mark finished** in the launched job's dialog, or **Mark <job> finished** in the
+   waiting job's.
 
 Editing a job file after approval sends it back to Pending Launch Approval.
 

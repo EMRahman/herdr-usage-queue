@@ -188,6 +188,9 @@ describe("waiting for another job", () => {
     expect(isFinished(launched({ mode: "merge", phase: "merged" }))).toBe(true);
     expect(isFinished({ launched: { at: 1 } })).toBe(false);
     expect(isFinished({ launched: { at: 1, finishedAt: 2 } })).toBe(true);
+    expect(isFinished({ launched: { at: 1, markedFinishedAt: 2 } })).toBe(true);
+    expect(isFinished(launched({ mode: "merge", phase: "needs-you" }))).toBe(false);
+    expect(isFinished({ launched: { at: 1, markedFinishedAt: 2, pr: { mode: "merge", phase: "needs-you" } } })).toBe(true);
   });
 
   test("blocked until the job it waits for is finished", () => {

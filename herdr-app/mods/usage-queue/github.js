@@ -41,6 +41,11 @@ export async function fetchPR(cwd, number) {
   return readPR({ view, reactions, issueComments, reviews, inline });
 }
 
+/** Just the PR's state: "OPEN", "MERGED" or "CLOSED". */
+export async function prState(cwd, number) {
+  return (await json(cwd, ["pr", "view", String(number), "--json", "state"]))?.state ?? "OPEN";
+}
+
 /** Merges the PR the way the repo allows: squash, else a merge commit, else rebase. */
 export async function mergePR(cwd, number) {
   const repo = await json(cwd, ["repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"]);

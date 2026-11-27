@@ -145,11 +145,12 @@ export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(
 
 // --- Waiting for another job ---
 
-/** Whether a launched job is finished: its PR merged, or (without a PR) its agent did its work
- *  and stopped. */
+/** Whether a launched job is finished: you marked it so, its PR merged, or (without a PR) its
+ *  agent did its work and stopped. */
 export function isFinished(entry) {
   const launched = entry?.launched;
   if (!launched) return false;
+  if (launched.markedFinishedAt) return true;
   if (launched.pr && launched.pr.mode !== "off") return launched.pr.phase === "merged";
   return Boolean(launched.finishedAt);
 }
