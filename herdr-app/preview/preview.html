@@ -24,7 +24,7 @@
   .card { position: absolute; left: 62px; top: 213px; width: 988px; height: 342px; background: #131916;
     border-radius: 14px; box-shadow: 6px 6px 0 #c9b796; display: flex; overflow: hidden; }
   .pane { display: flex; flex-direction: column; }
-  .left { width: 392px; border-right: 1px solid #2c332f; }
+  .left { width: 490px; border-right: 1px solid #2c332f; }
   .right { flex: 1; }
   .head { height: 60px; padding: 0 22px 0 24px; display: flex; align-items: center; gap: 10px;
     border-bottom: 1px solid #2c332f; }
@@ -38,11 +38,14 @@
   .lights { display: flex; gap: 18px; padding: 10px 24px 10px; color: #b9c0bb; font-size: 16px; }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 10px; margin-right: 7px; }
   .g { background: #2fbf71; } .y { background: #d4a72c; } .r { background: #e5534b; }
-  .rows { padding: 2px 14px; display: flex; flex-direction: column; gap: 4px; }
-  .row { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 10px; border-radius: 10px;
-    font-size: 20px; font-weight: 600; }
+  .rows { padding: 2px 14px; list-style: none; }
+  .group { padding: 7px 24px 2px; color: #9ca59f; font-size: 14px; font-weight: 500; }
+  .row { display: flex; align-items: center; gap: 8px; height: 35px; padding: 0 10px; border-radius: 8px;
+    font-size: 17px; font-weight: 600; }
   .row.hl { background: #1f2824; }
+  .row .dot { flex: none; margin-right: 2px; }
   .row .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .after { color: #9ca59f; font-size: 14px; font-weight: 500; }
   .btn { flex: none; white-space: nowrap; height: 30px; padding: 0 11px; display: flex; align-items: center; border-radius: 7px; background: #26302b;
     font-size: 15px; font-weight: 600; color: #f1efe9; }
   .btn.dim { color: #6d7771; }
@@ -97,18 +100,23 @@
     <div class="head">
       <div class="title">Usage Queue</div>
       <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>1</div>
-      <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>3</div>
+      <div class="tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>5</div>
       <div class="plus">+</div>
     </div>
-    <div class="sub">Ready to launch</div>
+    <div class="sub">Approved jobs</div>
     <div class="lights">
       <span><i class="dot g"></i>Claude</span><span><i class="dot y"></i>Codex</span><span><i class="dot r"></i>Antigravity</span>
     </div>
-    <div class="rows">
-      <div class="row hl"><i class="dot g"></i><span class="name">Fix flaky tests</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
-      <div class="row"><i class="dot r"></i><span class="name">Bump packages</span><span class="btn auto" id="auto">Auto in 2h 10m</span></div>
-      <div class="row"><i class="dot y"></i><span class="name">Write API docs</span><span class="btn">Auto</span><span class="btn">Launch</span></div>
-    </div>
+    <ul class="rows">
+      <li class="row hl"><i class="dot g"></i><span class="name">Fix flaky tests</span><span class="btn">Auto</span><span class="btn">Launch</span></li>
+      <li class="row"><i class="dot r"></i><span class="name">Bump packages</span><span class="btn auto">Auto in 2h 10m</span></li>
+      <li class="row"><i class="dot y"></i><span class="name">Write API docs</span><span class="btn">Auto</span><span class="btn">Launch</span></li>
+    </ul>
+    <h2 class="group" id="waiting">Waiting for another job</h2>
+    <ul class="rows" aria-labelledby="waiting">
+      <li class="row"><i class="dot g"></i><span class="name">Enable CI <span class="after">· after Fix flaky tests</span></span><span class="btn auto">Auto after</span></li>
+      <li class="row"><i class="dot y"></i><span class="name">Ship API docs <span class="after">· after Write API docs</span></span><span class="btn">Auto</span><span class="btn dim">Launch</span></li>
+    </ul>
   </div>
   <div class="pane right">
     <div class="head rhead"><div class="title">Fix flaky tests</div><div class="route">~/Code/webapp</div></div>
@@ -126,6 +134,6 @@
   <path d="M464 583H378L364 569V557" fill="none" stroke="#c8502c" stroke-width="1.6"/>
   <circle cx="364" cy="557" r="3.4" fill="#c8502c"/>
 </svg>
-<div class="note" style="left: 476px; top: 576px;">AUTO LAUNCHES WHEN ALLOWANCE IS BACK</div>
+<div class="note" style="left: 476px; top: 576px;">DEPENDENT JOBS WAIT FOR THEIR PREREQUISITES</div>
 </body>
 </html>
