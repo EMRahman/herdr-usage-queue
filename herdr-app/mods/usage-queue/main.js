@@ -515,11 +515,12 @@ export default class UsageQueue extends View {
   }
 
   openJob(id) {
-    openOverlay({ mod: ID, kind: "dialog", width: 580, props: { dialog: "job", id } });
+    // A fixed share of the window: the middle scrolls, the title and buttons stay put.
+    openOverlay({ mod: ID, kind: "dialog", width: 580, height: 0.85, props: { dialog: "job", id } });
   }
 
   openAdd() {
-    openOverlay({ mod: ID, kind: "dialog", width: 560, props: { dialog: "add" } });
+    openOverlay({ mod: ID, kind: "dialog", width: 560, height: 0.85, props: { dialog: "add" } });
   }
 
   tabButton(t, key, icon, label, count, narrow) {
@@ -805,7 +806,7 @@ export default class UsageQueue extends View {
     const p = props();
     const job = jobById(p.id);
     if (!job) {
-      return v_flex().p(18).bg(t.popover).gap(8).text_color(t.foreground)
+      return v_flex().size_full().p(18).bg(t.popover).gap(8).text_color(t.foreground)
         .child(div().text_size(14).child(data.loaded ? "This job is gone." : "Loading…"))
         .child(h_flex().child(div().flex_1()).child(button(t, "close", "Close", "secondary", () => closeOverlay(p.overlay))));
     }
@@ -901,8 +902,13 @@ export default class UsageQueue extends View {
         closeOverlay(p.overlay);
       }), !route));
     }
-    body.push(footer);
-    return v_flex().id("job-dialog").w_full().p(18).bg(t.popover).text_color(t.foreground).text_size(13).children(body);
+    // The title and its details stay at the top, the buttons at the bottom; the rest scrolls.
+    const head = body.splice(0, 2);
+    return v_flex().id("job-dialog").size_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground).text_size(13)
+      .children(head)
+      .child(v_flex().id("job-body").flex_1().min_h(0).pr(8).overflow_y_scrollbar()
+        .child(v_flex().flex_none().w_full().children(body)))
+      .child(footer);
   }
 
   // ---------- Add dialog ----------
@@ -998,12 +1004,13 @@ export default class UsageQueue extends View {
         cx.notify();
       }
     });
-    return v_flex().id("add-dialog").w_full().p(18).bg(t.popover).text_color(t.foreground)
+    return v_flex().id("add-dialog").size_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
       .on_key_down((e, cx) => {
         if (e.keystroke === "cmd-enter" || e.keystroke === "ctrl-enter") { save(cx); cx.stop_propagation(); }
       })
       .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(title || prompt ? "Add a job · draft" : "Add a job"))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(v_flex().id("add-body").flex_1().min_h(0).pr(8).overflow_y_scrollbar().child(v_flex().flex_none().w_full()
       .child(label("Title"))
       .child(Input.new(this.title).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.8))
       .child(label("Prompt"))
@@ -1036,6 +1043,7 @@ export default class UsageQueue extends View {
       .when(Boolean(this.error), (el) => el.child(div().pt(10).text_size(12).text_color(LIGHT.red).child(this.error)))
       .child(div().pt(10).text_size(11).text_color(t.dim)
         .child(`Saved as a file in ${paths().jobs}. ⌘↵ adds it. Esc or Close keeps this as a draft.`))
+      ))
       .child(h_flex().pt(16).gap(8)
         .when(Boolean(title || prompt), (el) => el.child(button(t, "clear", "Clear", "secondary", (_e, cx) => this.clearDraft(cx))))
         .child(div().flex_1())
