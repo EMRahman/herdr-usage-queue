@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanUpMerged, cleanupEntry, ignoredPaths, parseWorktrees, rebuildable } from "../herdr-app/mods/usage-queue/cleanup.js";
+import { cleanUpMerged, cleanupEntry, hiddenFromStatus, ignoredPaths, parseWorktrees, rebuildable } from "../herdr-app/mods/usage-queue/cleanup.js";
 
 const git = async (cwd, args) => {
   const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -100,6 +100,26 @@ describe("cleanUpMerged", () => {
     mkdirSync(join(tree, "node_modules", "pkg"), { recursive: true });
     writeFileSync(join(tree, "node_modules", "pkg", "index.js"), "");
     writeFileSync(join(tree, ".DS_Store"), "");
+    expect(await clean()).toMatchObject({ status: "done", removed: ["worktree", "branch", "origin branch"] });
+  });
+
+  test("an edit hidden by skip-worktree or assume-unchanged: kept", async () => {
+    for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
+      sh(tree, "update-index", flag, "b.txt");
+      writeFileSync(join(tree, "b.txt"), `edited behind ${flag}`);
+      expect(sh(tree, "status", "--porcelain")).toBe("");
+      const r = await clean();
+      expect(r).toMatchObject({ status: "kept", removed: [] });
+      expect(r.reason).toContain("b.txt");
+      sh(tree, "update-index", flag.replace("--", "--no-"), "b.txt");
+      sh(tree, "checkout", "--", "b.txt");
+    }
+  });
+
+  test("flagged files that are unchanged or absent (sparse checkout): it goes", async () => {
+    sh(tree, "update-index", "--assume-unchanged", "b.txt");
+    sh(tree, "update-index", "--skip-worktree", "c.txt");
+    rmSync(join(tree, "c.txt"));
     expect(await clean()).toMatchObject({ status: "done", removed: ["worktree", "branch", "origin branch"] });
   });
 
@@ -215,6 +235,15 @@ describe("rebuildable", () => {
   });
   test("ignoredPaths reads -z status output", () => {
     expect(ignoredPaths("?? new.txt\0!! .env\0!! node_modules/\0!! we ird.pyc\0")).toEqual([".env", "node_modules/", "we ird.pyc"]);
+  });
+});
+
+describe("hiddenFromStatus", () => {
+  test("skip-worktree (S, s) and assume-unchanged (lowercase) files, not normal ones", () => {
+    const out = ["H 100644 aaa 0\tplain.txt", "S 100644 bbb 0\tconf.txt", "h 100644 ccc 0\tlocal.txt", "s 100644 ddd 0\tboth.txt", "S 100644 eee 0\twe ird.txt", ""].join("\0");
+    expect(hiddenFromStatus(out)).toEqual([
+      { path: "conf.txt", blob: "bbb" }, { path: "local.txt", blob: "ccc" }, { path: "both.txt", blob: "ddd" }, { path: "we ird.txt", blob: "eee" },
+    ]);
   });
 });
 

@@ -46,6 +46,18 @@ export function ignoredPaths(output) {
   return String(output ?? "").split("\0").filter((e) => e.startsWith("!! ")).map((e) => e.slice(3));
 }
 
+/** `git ls-files -s -v -z` output: the files git is told not to look at (skip-worktree "S",
+ *  assume-unchanged lowercase), whose edits status and `worktree remove` can't see.
+ *  [{ path, blob }]. */
+export function hiddenFromStatus(output) {
+  return String(output ?? "").split("\0").map((e) => e.match(/^(\S) \d+ ([0-9a-f]+) \d+\t(.+)$/s))
+    .filter((m) => m && (m[1] === "S" || m[1] !== m[1].toUpperCase()))
+    .map((m) => ({ path: m[3], blob: m[2] }));
+}
+
+/** At most this many hidden files are compared one by one; more keeps the worktree. */
+const HIDDEN_CHECK_MAX = 50;
+
 const short = (err, fallback) => String(err ?? "").split("\n").map((l) => l.trim()).filter(Boolean).at(-1) || fallback;
 
 /**
@@ -93,6 +105,20 @@ export async function cleanUpMerged({ git, repo, branch, number, headOid, freeFo
     const status = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
     if (!status.ok) return wait(short(status.err, "git status failed."));
     if (status.out) return kept(`The worktree at ${tree.path} has uncommitted or untracked files.`);
+    // Edits to files flagged skip-worktree or assume-unchanged don't show anywhere: compare each
+    // one on disk with the index. A missing one loses nothing (git has it).
+    const flags = await run(["-C", tree.path, "ls-files", "-s", "-v", "-z"]);
+    if (!flags.ok) return wait(short(flags.err, "git ls-files failed."));
+    const hidden = hiddenFromStatus(flags.out);
+    if (hidden.length > HIDDEN_CHECK_MAX) {
+      return kept(`The worktree at ${tree.path} has ${hidden.length} files git is told not to check for edits.`);
+    }
+    for (const file of hidden) {
+      const hash = await run(["-C", tree.path, "hash-object", "--", file.path]);
+      if (hash.ok ? hash.out !== file.blob : !/could not open|No such file/i.test(hash.err)) {
+        return kept(`The worktree at ${tree.path} has edits git is told to ignore (skip-worktree or assume-unchanged): ${file.path}.`);
+      }
+    }
     // `worktree remove` deletes ignored files without --force: keep any that aren't rebuildable.
     const ignored = await run(["-C", tree.path, "--no-optional-locks", "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"]);
     if (!ignored.ok) return wait(short(ignored.err, "git status failed."));
