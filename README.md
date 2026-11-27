@@ -21,7 +21,7 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
 ## The flow
 
 1. **Add a job** with **+**, or write a JSON file into `~/.config/herdr-app/usage-queue/jobs/`.
-   The job appears in **Launch queue** with a **Needs allocation** marker.
+   The job appears in **Usage Queue** with a **Needs allocation** marker.
 2. **Set the size** in the job dialog. Choose **Small**, **Medium** or **Large**, and check the
    agent, model and effort. **Estimate with a model** can suggest those settings using
    subscription allowance. **Save allocation** keeps your choices for later. Size records the

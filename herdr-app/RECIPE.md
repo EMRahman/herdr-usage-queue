@@ -13,7 +13,7 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **A sidebar block** below the Spaces / Agents (/ Context) lists, above Saved Prompts when
   there is one. It's a weighted share of the sidebar (`weight: 0.35`, `min: 90`), so it resizes
   like the lists. `chrome` background, 1px `border` line above.
-- **Header**, 34px, 16px left padding, 8px right: `Launch queue` at 11.5px medium in `dim`
+- **Header**, 34px, 16px left padding, 8px right: `Usage Queue` at 11.5px medium in `dim`
   and an **Add a job** button. `+` is a 24px square, radius 6, with `plus.svg` at 14px.
   When any job is on Auto, a "Pause auto" switch sits below the header at the right.
   While paused it reads "Paused · resume" in yellow.
@@ -181,7 +181,7 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - The block shows under the lists with a light per signed-in agent; hovering one shows each
   pool's reason.
 - **+** adds a job; Esc keeps the draft and **+** brings it back.
-- A new file in `usage-queue/jobs/` shows in Launch queue with **Needs allocation**.
+- A new file in `usage-queue/jobs/` shows in Usage Queue with **Needs allocation**.
 - **Estimate** with a suggested big model fills the proposal; **Show reply** and **Open log**
   show what came back.
 - **Save allocation** reveals launch controls in the same row. Editing the file restores the marker.

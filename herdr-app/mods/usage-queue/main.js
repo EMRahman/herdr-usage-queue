@@ -1063,7 +1063,7 @@ export default class UsageQueue extends View {
   renderSidebar(t) {
     const lists = classify(data.jobs, data.state);
     const header = h_flex().h(34).pl(16).pr(8).flex_none().items_center().gap(2)
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.dim).child("Launch queue"))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.dim).child("Usage Queue"))
       .child(div().id("add-job").size(24).flex_none().flex().items_center().justify_center().rounded(6)
           .text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
           .tooltip(draft ? "Add a job (continue your draft)" : "Add a job").on_click(() => this.openAdd())

@@ -460,7 +460,7 @@ shared("usage-monitor.windows") = {
 
 ## UI
 
-**Launch queue** is a single sidebar list. Jobs appear by priority, with dependent jobs grouped
+**Usage Queue** (the panel header) is a single sidebar list. Jobs appear by priority, with dependent jobs grouped
 under **Waiting for another job**. A row shows **Needs allocation** or launch controls for its
 saved allocation. The job dialog shows manual size choices and an optional estimate.
 **Launched** appears below the queue with recent launches and PR statuses.
