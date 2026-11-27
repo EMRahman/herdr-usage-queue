@@ -8,7 +8,7 @@ Claude Code · Codex · Antigravity
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
-![Launch queue with jobs ready to start, a job that needs allocation and jobs waiting on dependencies. The selected job shows manual size options.](herdr-app/preview.png)
+![Usage Queue with manual and automatic launches, jobs waiting on dependencies, and a workflow showing how available allowance starts a job and PR auto-merge on approval unblocks the next one.](herdr-app/preview.png)
 
 Subscriptions reset their allowance on a clock, and whatever is left when a window resets is
 gone. Usage Queue holds jobs you'd like done and launches them on demand or automatically when
