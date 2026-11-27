@@ -425,7 +425,7 @@ shared("usage-monitor.windows") = {
     provider: string,              // "claude" | "codex" | "antigravity" | …
     account: string | null,
     plan: string | null,
-    readAt: number | null,         // this pool's reading; stale when old
+    readAt: number | null,         // this pool's reading; stale when old or null (unknown)
     ttlMs: number | null,          // Usage Monitor's refresh interval for it; stale past 2× + 5 min
     name?: string,                 // the model group, for model-group pools
     models?: string[],             // for model-group pools

@@ -68,6 +68,15 @@ describe("poolsFromReport", () => {
     expect(pools[0].windows[1]).toMatchObject({ kind: "weekly", leftPct: 4 });
   });
 
+  test("a provider missing from read_at has an unknown reading time, not the report's save time", () => {
+    const report = { ...REPORT, timestamp: NOW, read_at: { claude: NOW - 60_000 } };
+    const byId = Object.fromEntries(poolsFromReport(report).map((p) => [p.id, p.readAt]));
+    expect(byId.claude).toBe(NOW - 60_000);
+    expect(byId.codex).toBeNull();
+    // A report with no read_at at all falls back to when it was saved.
+    expect(poolsFromReport({ ...REPORT, read_at: undefined, timestamp: NOW - HOUR })[0].readAt).toBe(NOW - HOUR);
+  });
+
   test("an empty or missing report gives no pools", () => {
     expect(poolsFromReport(null)).toEqual([]);
     expect(poolsFromReport({})).toEqual([]);
@@ -131,6 +140,13 @@ describe("judgePool", () => {
     const j = judgePool(pool([w("5h", 90, 2 * HOUR, 5 * HOUR)], { readAt: NOW - 2 * HOUR }), NOW);
     expect(j.light).toBe("red");
     expect(j.reason).toContain("stale");
+  });
+
+  test("red when the reading's age is unknown", () => {
+    const j = judgePool(pool([w("5h", 90, 2 * HOUR, 5 * HOUR)], { readAt: null }), NOW);
+    expect(j.light).toBe("red");
+    expect(j.reason).toBe("Reading age unknown");
+    expect(j.reading).toBe("stale");
   });
 });
 
