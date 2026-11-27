@@ -6,7 +6,7 @@ spare. Choose a size, agent, model and effort, or ask a big model to estimate. C
 in a new git worktree, branched from the repo's latest commit on its remote, in a background
 space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-usage-monitor).
 
-![Usage Queue](preview.png)
+![Usage Queue with manual and automatic launches, jobs waiting on dependencies, and a workflow showing how available allowance starts a job and PR auto-merge on approval unblocks the next one.](preview.png)
 
 ## What you see
 
