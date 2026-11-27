@@ -185,6 +185,30 @@ export function canWaitFor(job, jobs, state) {
   return jobs.filter((j) => j.id !== job.id && !isFinished(state.jobs?.[j.id]) && !waitsOn(j.id, job.id));
 }
 
+/** A starting point for choosing by hand: the agent's mid-tier model (else its first) at medium
+ *  effort (else its second level). */
+export function defaultRoute(catalog, agentId) {
+  const agent = agentOf(catalog, agentId);
+  if (!agent?.models.length) return null;
+  const model = agent.models.find((m) => m.tier === "mid") ?? agent.models[0];
+  const effort = agent.efforts.includes("medium") ? "medium" : agent.efforts[Math.min(1, agent.efforts.length - 1)];
+  return { agent: agent.id, model: model.id, effort, size: "m", why: "" };
+}
+
+/**
+ * The routes to choose from: the estimate's, plus a default for each of the job's agents it left
+ * out, so any agent can be picked by hand. Without an estimate, a default for each agent.
+ */
+export function routeOptions(catalog, job, estimate) {
+  const routes = [...(estimate?.routes ?? [])];
+  for (const id of job.agents) {
+    if (routes.some((r) => r.agent === id)) continue;
+    const r = defaultRoute(catalog, id);
+    if (r) routes.push(r);
+  }
+  return routes;
+}
+
 /** A route pinned by the job file itself (model and effort for one agent), or null. */
 export function pinnedRoute(catalog, job) {
   for (const id of job.agents) {

@@ -223,3 +223,26 @@ describe("waiting for another job", () => {
     expect(dueToLaunch(jobs.slice(0, 2), state, catalog, pools, judged).map((j) => j.id)).toEqual(["b"]);
   });
 });
+
+describe("choosing by hand", () => {
+  const { defaultRoute, routeOptions } = require("../herdr-app/mods/usage-queue/queue.js");
+  test("each agent starts at its mid-tier model and medium effort", () => {
+    expect(defaultRoute(catalog, "claude")).toMatchObject({ agent: "claude", model: "sonnet", effort: "medium" });
+    expect(defaultRoute(catalog, "codex")).toMatchObject({ model: "gpt-6.2-sol", effort: "medium" });
+    expect(defaultRoute(catalog, "nope")).toBe(null);
+  });
+
+  test("every agent of the job can be picked, with or without an estimate", () => {
+    const job = { agents: ["claude", "codex"] };
+    expect(routeOptions(catalog, job, null).map((r) => r.agent)).toEqual(["claude", "codex"]);
+    const estimate = { routes: [{ agent: "codex", model: "gpt-6-luna", effort: "low", size: "s", why: "Small." }] };
+    expect(routeOptions(catalog, job, estimate).map((r) => `${r.agent}:${r.model}`)).toEqual(["codex:gpt-6-luna", "claude:sonnet"]);
+  });
+});
+
+test("by hand, the default is the agent with the most room when none is going to waste", () => {
+  const { routeOptions } = require("../herdr-app/mods/usage-queue/queue.js");
+  const judged = { claude: j("yellow", { headroom: 7 }), codex: j("yellow", { headroom: 36 }) };
+  const routes = routeOptions(catalog, { agents: ["claude", "codex"] }, null);
+  expect(proposeRoute(catalog, { routes, recommended: null }, pools, judged).agent).toBe("codex");
+});

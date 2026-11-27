@@ -21,7 +21,7 @@ import { fetchPR, findPR, mergePR, myLogin } from "./github.js";
 import { buildEstimatePrompt, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage } from "./review.js";
 import {
-  agentLights, blockedBy, canWaitFor, classify, dueToLaunch, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
+  agentLights, blockedBy, canWaitFor, classify, dueToLaunch, routeOptions, estimatorChoices, jobId, jobText, pinnedRoute, proposeRoute, routeStatus,
 } from "./queue.js";
 import { judgeAll, poolsFromReport } from "./rule.js";
 import {
@@ -609,7 +609,7 @@ export default class UsageQueue extends View {
               wait ? waitText : red ? `Not yet: ${j.reason}` : `Launch now (${LIGHT_WORD[j.light]}): ${j.reason}`,
               (cx) => ask({ type: "launch", id: job.id }, cx)));
     } else if (kind === "pending") {
-      const text = est && !est.failed ? null : s.estimate?.hash === job.hash || pinnedRoute(data.catalog, job) ? "Review" : est?.failed ? "Failed" : "Estimate";
+      const text = est && !est.failed ? null : s.estimate?.hash === job.hash || pinnedRoute(data.catalog, job) ? "Review" : est?.failed ? "Failed" : "Choose";
       right = text === null
         ? div().text_size(11.5).text_color(t.muted).frames(SPINNER, 90)
         : div().text_size(11.5).text_color(text === "Failed" ? LIGHT.red : t.dim).child(text);
@@ -742,7 +742,10 @@ export default class UsageQueue extends View {
     if (this.route) return this.route;
     if (s.approval?.hash === job.hash) return s.approval.route;
     const estimate = s.estimate?.hash === job.hash ? s.estimate : null;
-    return s.proposal && estimate ? s.proposal : pinnedRoute(data.catalog, job);
+    if (s.proposal && estimate) return s.proposal;
+    // No estimate: start from the defaults, on the agent with the most allowance to spare.
+    return pinnedRoute(data.catalog, job)
+      ?? proposeRoute(data.catalog, { routes: routeOptions(data.catalog, job, null), recommended: null }, data.pools, data.judged);
   }
 
   section(t, title) {
@@ -755,9 +758,9 @@ export default class UsageQueue extends View {
     const { choices, suggested } = estimatorChoices(data.catalog, data.pools, data.judged, job.agents);
     const key = (c) => `${c.agent.id}/${c.model.id}`;
     const picked = choices.find((c) => key(c) === this.estimator && c.usable) ?? suggested;
-    const els = [this.section(t, s.estimate?.hash === job.hash ? "1 · Estimate (done; run again to refresh)" : "1 · Estimate model and effort")];
+    const els = [this.section(t, s.estimate?.hash === job.hash ? "1 · Estimate (done; run again to refresh)" : "1 · Estimate model and effort (optional)")];
     els.push(div().pb(6).text_size(12).text_color(t.muted)
-      .child("A big model reads the job and recommends a model, effort and size for each agent. It uses allowance too, so it runs only when you click."));
+      .child("A big model reads the job and recommends a model, effort and size for each agent. It uses allowance too, so it runs only when you click. Or skip it and choose below."));
     els.push(v_flex().gap(2).children(choices.map((c) => {
       const selected = picked && key(c) === key(picked);
       const j = c.judgement ?? { light: "red", reason: "No allowance reading" };
@@ -806,8 +809,11 @@ export default class UsageQueue extends View {
   proposalSection(t, job, route) {
     const s = jobState(job.id);
     const estimate = s.estimate?.hash === job.hash ? s.estimate : null;
-    const options = estimate?.routes ?? [pinnedRoute(data.catalog, job)].filter(Boolean);
-    const els = [this.section(t, "2 · Proposal: approve as is, or adjust")];
+    const pinned = pinnedRoute(data.catalog, job);
+    const options = pinned && !estimate ? [pinned] : routeOptions(data.catalog, job, estimate);
+    const els = [this.section(t, estimate ? "2 · Proposal: approve as is, or adjust"
+      : pinned ? "2 · Set in the job file: approve as is, or adjust"
+        : "2 · Choose the agent, model and effort, or estimate above")];
     els.push(v_flex().gap(4).children(options.map((r) => {
       const selected = route?.agent === r.agent;
       const { judgement: j } = routeStatus(data.catalog, selected ? route : r, data.pools, data.judged);
