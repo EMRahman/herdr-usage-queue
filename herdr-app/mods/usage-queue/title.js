@@ -43,7 +43,8 @@ export function titleChoices(catalog, { installed = null, pools = [], judged = {
     const light = pool ? judged[pool.id]?.light : null;
     choices.push({ agent, model, effort: agent.efforts[0], light });
   }
-  const rank = (c) => TIERS.indexOf(c.model.tier) * 10 + (c.light === "red" ? 4 : 0)
+  // TIERS runs most capable first, so the smallest tier ranks lowest.
+  const rank = (c) => (TIERS.length - 1 - TIERS.indexOf(c.model.tier)) * 10 + (c.light === "red" ? 4 : 0)
     + (c.light === "green" ? 0 : 1) + (jobAgents.includes(c.agent.id) ? 0 : 2);
   return choices.sort((a, b) => rank(a) - rank(b));
 }

@@ -1531,7 +1531,13 @@ export default class UsageQueue extends View {
     });
   }
 
+  /** One model request at a time: asked again while one runs, it runs once more afterwards, on
+   *  the prompt as it is then, so a pause in typing doesn't start another process. */
   suggest(cx, seq = ++this.titleSeq) {
+    if (this.titleBusy) {
+      this.titleAgain = true;
+      return;
+    }
     const prompt = this.prompt.value().trim();
     if (prompt.length < TITLE_MIN_PROMPT) {
       this.titleStatus = null;
@@ -1542,18 +1548,21 @@ export default class UsageQueue extends View {
     });
     this.titleStatus = { busy: true, by: choices[0] ? `${choices[0].agent.name} ${choices[0].model.label}` : "" };
     cx.notify();
+    this.titleBusy = true;
+    this.titleAgain = false;
     cx.spawn(async (cx) => {
-      let status;
+      let status = null;
       try {
         const { title, by } = await suggestTitle({ prompt, choices, exec, cwd: this.repo ? expandHome(this.repo) : undefined });
-        if (seq !== this.titleSeq || this.titleManual) return;
-        this.setTitle(title);
-        status = { by };
+        status = { by, title };
       } catch (e) {
-        if (seq !== this.titleSeq || this.titleManual) return;
         status = { error: String(e?.message ?? e) };
       }
-      this.titleStatus = status;
+      this.titleBusy = false;
+      if (this.titleAgain && !this.titleManual) return this.suggest(cx);
+      if (seq !== this.titleSeq || this.titleManual) return;
+      if (status.title) this.setTitle(status.title);
+      this.titleStatus = status.title ? { by: status.by } : status;
       this.keepDraft(cx);
       cx.notify();
     });

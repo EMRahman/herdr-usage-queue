@@ -33,6 +33,13 @@ describe("title", () => {
     expect(choices.map((c) => c.agent.id)).toEqual(["codex", "claude"]);
   });
 
+  test("a smaller tier beats a bigger one, whatever the allowance", () => {
+    const big = mergeCatalog({ agents: [{ id: "claude", models: [{ id: "opus", label: "Opus", tier: "big" }] }] });
+    const judged = { claude: { light: "green" }, codex: { light: "red" } };
+    const choices = titleChoices(big, { installed: new Set(["claude", "codex"]), pools, judged, jobAgents: ["claude"] });
+    expect(choices.map((c) => c.model.id)).toEqual(["gpt-6-luna", "opus"]);
+  });
+
   test("it falls back to the next model when one fails", async () => {
     const choices = titleChoices(catalog, { installed: new Set(["claude", "codex"]), pools, jobAgents: ["claude"] });
     const calls = [];
