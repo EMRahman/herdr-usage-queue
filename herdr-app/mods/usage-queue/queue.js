@@ -137,10 +137,21 @@ export function proposeRoute(catalog, estimate, pools, judged, permissions = "de
 
 export const SETTLE_MS = 10 * 60_000;
 
-export function settlingPools(state, now = Date.now(), settleMs = SETTLE_MS) {
-  return new Set(Object.values(state.jobs ?? {}).map((s) => s.launched)
-    .filter((run) => run?.pool && now - Math.max(run.at, run.resumedAt ?? 0) < settleMs)
-    .map((run) => run.pool));
+/**
+ * Pools something launched or resumed on within `settleMs`: readings lag use, so the next launch
+ * there waits. A run's hold ends early once it has finished and its pool has a reading taken
+ * after that (judged[pool].readAt), since that reading already shows what it used.
+ */
+export function settlingPools(state, judged = {}, now = Date.now(), settleMs = SETTLE_MS) {
+  return new Set(Object.values(state.jobs ?? {})
+    .filter((entry) => {
+      const run = entry.launched;
+      if (!run?.pool || now - Math.max(run.at, run.resumedAt ?? 0) >= settleMs) return false;
+      const done = finishedAt(entry);
+      const readAt = judged[run.pool]?.readAt;
+      return !(done && Number.isFinite(readAt) && readAt > done);
+    })
+    .map((entry) => entry.launched.pool));
 }
 
 /**
@@ -150,7 +161,7 @@ export function settlingPools(state, now = Date.now(), settleMs = SETTLE_MS) {
  */
 export function dueToLaunch(jobs, state, catalog, pools, judged, now = Date.now(), settleMs = SETTLE_MS) {
   if (state.paused) return [];
-  const settling = settlingPools(state, now, settleMs);
+  const settling = settlingPools(state, judged, now, settleMs);
   const due = [];
   for (const job of classify(jobs, state).queued) {
     const allocation = allocationFor(job, state);
@@ -173,7 +184,7 @@ export function canBrake(entry) {
 /** A plan for one reading. Status null means the agent is gone. Undefined means its identity or
  *  status hasn't been established. Resume decisions share the same settle period as Auto. */
 export function brakeSteps(jobs, state, judged, agentStatus, now = Date.now(), settleMs = SETTLE_MS) {
-  const settling = settlingPools(state, now, settleMs);
+  const settling = settlingPools(state, judged, now, settleMs);
   const steps = [];
   const resumes = [];
   for (const job of [...jobs].sort(byPriority)) {
@@ -217,6 +228,14 @@ export function isFinished(entry) {
   if (launched.markedFinishedAt) return true;
   if (launched.pr && launched.pr.mode !== "off") return launched.pr.phase === "merged";
   return Boolean(launched.finishedAt && !launched.braked);
+}
+
+/** When a finished job finished (ms), or null if it isn't, or the time wasn't recorded. */
+export function finishedAt(entry) {
+  if (!isFinished(entry)) return null;
+  const launched = entry.launched;
+  const at = launched.markedFinishedAt ?? (launched.pr && launched.pr.mode !== "off" ? launched.pr.changedAt : launched.finishedAt);
+  return Number.isFinite(at) ? at : null;
 }
 
 export function waitFor(job, state) {

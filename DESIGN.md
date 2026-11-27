@@ -198,8 +198,9 @@ more, and comes after v1.
 ### 4. Limits
 
 - **One running job per pool** at first (`concurrency` setting later).
-- **Settle time**: after a dispatch, the pool is held for `settle` (default 10 min) or until a
-  new reading arrives, because readings lag behind use.
+- **Settle time**: after a dispatch, the pool is held for `settle` (default 10 min), because
+  readings lag behind use. The hold ends early once that job has finished (PR merged, marked
+  finished, or its agent worked and stopped) and the pool has a reading taken after that.
 - **Cost estimate**: each finished job records the drop in `leftPct` on its pool. Only runs
   where no other agent on the same provider was working in Herdr count, so your own work does
   not inflate it. The estimate is the median of recent clean runs (default 5 points before any

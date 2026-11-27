@@ -212,7 +212,7 @@ async function doLaunch({ id, hash, auto = false }) {
   if (judgement.light === "red") {
     return notify({ title: `${job.title}: not yet`, body: judgement.reason, level: "warning" });
   }
-  if (auto && (settlingPools(data.state).has(pool.id) || poolBusy(pool.id))) return;
+  if (auto && (settlingPools(data.state, data.judged).has(pool.id) || poolBusy(pool.id))) return;
   running.launches.set(id, pool.id);
   changed();
   try {
