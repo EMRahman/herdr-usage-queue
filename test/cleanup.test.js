@@ -166,6 +166,16 @@ describe("cleanUpMerged", () => {
     expect(branchExists(repo, branch)).toBe(true);
   });
 
+  test("a worktree moved after launch: its new folder is the one checked and removed", async () => {
+    const moved = join(repo, "..", "moved-worktree");
+    sh(repo, "worktree", "move", tree, moved);
+    const asked = [];
+    const r = await clean({ freeFolder: async (path) => { asked.push(path); return "Its space is on screen."; } });
+    expect(r).toEqual({ status: "wait", reason: "Its space is on screen.", removed: [] });
+    expect(asked).toEqual([realpathSync(moved)]);
+    expect(existsSync(moved)).toBe(true);
+  });
+
   test("the worktree folder was deleted by hand: git forgets it and the branches go", async () => {
     rmSync(tree, { recursive: true, force: true });
     expect(await clean()).toEqual({ status: "done", reason: "", removed: ["branch", "origin branch"] });

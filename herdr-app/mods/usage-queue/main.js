@@ -416,6 +416,7 @@ function folderUse(folder) {
   if (stopping && terminals().some((t) => t.state === "live" && stopping.has(t.address))) {
     return result("Its terminals haven't stopped yet.");
   }
+  closingTerminals.delete(folder);
   const own = [];
   for (const sp of spaces()) {
     const tabs = new Set((sp.tabs ?? []).map((tab) => tab.id));
@@ -472,10 +473,11 @@ async function runCleanups() {
           const head = await prHead(repo, entry.number);
           result = head.state && head.state !== "MERGED"
             ? { status: "kept", reason: `PR #${entry.number} is ${head.state.toLowerCase()} now.`, removed: [] }
-            // The folder as launched, which its space and terminals use (git may resolve links).
+            // Both the folder as launched (what its space uses; git may resolve links) and where git
+            // says the worktree is now (`git worktree move`): the one removed must be free.
             : await cleanUpMerged({
               git: gitIn, repo, branch: entry.branch, number: entry.number, headOid: head.headRefOid,
-              freeFolder: () => closeFolder(entry.folder),
+              freeFolder: async (path) => (await closeFolder(entry.folder)) || (path !== entry.folder ? await closeFolder(path) : ""),
             });
         }
       } catch (e) {
