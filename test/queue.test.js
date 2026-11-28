@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CATALOG, estimateArgv, launchArgv, mergeCatalog, poolFor } from "../herdr-app/mods/usage-queue/catalog.js";
 import { estimatePrompt, parseEstimate } from "../herdr-app/mods/usage-queue/estimate.js";
 import {
-  agentLights, allocationFor, classify, dueToLaunch, estimatorChoices, jobText, pinnedRoute, proposeRoute, readJob, routeStatus,
+  agentLights, allocationFor, classify, dueToLaunch, estimatorChoices, jobText, newestFirst, pinnedRoute, proposeRoute, readJob, routeStatus,
 } from "../herdr-app/mods/usage-queue/queue.js";
 
 const catalog = mergeCatalog(null);
@@ -329,4 +329,10 @@ test("by hand, the default is the agent with the most room when none is going to
   const judged = { claude: j("yellow", { headroom: 7 }), codex: j("yellow", { headroom: 36 }) };
   const routes = routeOptions(catalog, { agents: ["claude", "codex"] }, null);
   expect(proposeRoute(catalog, { routes, recommended: null }, pools, judged).agent).toBe("codex");
+});
+
+test("newestFirst puts the oldest job last", () => {
+  const jobs = [{ id: "a", createdAt: 1 }, { id: "c", createdAt: 3 }, { id: "b", createdAt: 2 }];
+  expect(newestFirst(jobs).map((j) => j.id)).toEqual(["c", "b", "a"]);
+  expect(jobs.map((j) => j.id)).toEqual(["a", "c", "b"]);
 });

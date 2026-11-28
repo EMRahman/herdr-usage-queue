@@ -57,6 +57,9 @@ export function jobId(title, now = Date.now()) {
 
 const byPriority = (a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 
+/** Newest first, so the oldest job comes last (ties keep the queue's order). */
+export const newestFirst = (jobs) => [...jobs].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+
 /** The saved allocation is stored under "approval" and applies to one version of the file. */
 export function allocationFor(job, state) {
   const allocation = state.jobs?.[job.id]?.approval;
