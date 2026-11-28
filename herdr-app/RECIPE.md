@@ -14,7 +14,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   there is one. It's a weighted share of the sidebar (`weight: 0.35`, `min: 90`), so it resizes
   like the lists. `chrome` background, 1px `border` line above.
 - **Header**, 34px, 16px left padding, 8px right: `Usage Queue` at 11.5px medium in `dim`
-  and an **Add a job** button. `+` is a 24px square, radius 6, with `plus.svg` at 14px.
+  a **Dependency map** button (shown once there's a job) and an **Add a job** button. Each is a
+  24px square, radius 6, with a 14px icon: the mod's own `map.svg`, and `plus.svg`.
   When any job is on Auto, a "Pause auto" switch sits below the header at the right.
   While paused it reads "Paused · resume" in yellow.
 - **Lights**, 16px side padding, 12px apart: one per coding agent that has a reading (Claude,
@@ -47,6 +48,19 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
     radius 6) for the chosen one.
   - Footer buttons include **Delete job**, **Save allocation**, **Auto** and **Launch**.
     Saved allocations can be cleared, and scheduled jobs show **Cancel Auto**.
+- **The dependency map** (`popover`, sized to the map: at most 90% of the window, at least
+  600×280, centered): "Dependency map" (15px semibold), a
+  legend with counts (Working in `working`, Waiting in `dim`, Merged / done in green), and a
+  scrolling `canvas` box. Each job is a 210×48 card, radius 8 (a `working` border while it
+  works), with a 3px stripe in its stage's colour, its title, and its status ("PR #12 · round
+  1/3", "Waits for …", "Needs allocation", "Auto in 2h", "Merged #12 · 3h ago"). Bands from the
+  bottom: Merged / done, Working, Waiting, each named in a 104px gutter with a `border` line
+  between them. Within a band a job goes up a row for each job of its own stage it waits for, so
+  the jobs furthest from running are on top. A job sits above the job it waits for, in its first
+  child's column, so a chain is one vertical line; trees with something working are leftmost,
+  then waiting, then finished ones (`graph.js`). Arrows are `PathBuilder` curves from each job down to the one it waits for:
+  dashed `dim` while the job waited for is unfinished, solid green once it is. Clicking a card
+  opens its job dialog on top.
 - **The add dialog** (560px): Title, Prompt (150px), Repository: up to six repo chips
   (24px, radius 6, the folder name; hover for the path), the focused pane's repo first and
   selected, then repos open in local spaces or panes, then recent jobs' repos. Worktrees and
@@ -146,7 +160,7 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
   (agents, models, efforts, launch and estimate commands; `usage-queue/catalog.json`
   overrides any agent by id); `estimate.js` (the prompt, parsing the answer); `launch.js`
   (running estimates, the worktree and the launch); `base.js` (which commit to start from);
-  `github.js` (the `gh` calls); `review.js` (review rounds); `cleanup.js` (removing a merged
+  `github.js` (the `gh` calls); `graph.js` (the dependency map's layout); `map.svg` (its icon); `review.js` (review rounds); `cleanup.js` (removing a merged
   job's worktree and branches);
   `store.js` (every file read and write); `time.js`.
 - **`herdr` functions**: `theme`, `props`, `shared` / `setShared` (a revision that redraws

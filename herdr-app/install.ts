@@ -98,7 +98,7 @@ function install() {
 
   // The mod first, the layout block last: a new block starts its mod, which should find its files.
   mkdirSync(destination, { recursive: true });
-  for (const file of readdirSync(source).filter((f) => f.endsWith(".js") || f === "mod.json")) {
+  for (const file of readdirSync(source).filter((f) => f.endsWith(".js") || f.endsWith(".svg") || f === "mod.json")) {
     writeIfChanged(join(destination, file), readFileSync(join(source, file)));
   }
 
