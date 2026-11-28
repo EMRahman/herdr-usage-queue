@@ -21,45 +21,58 @@
   h1 { position: absolute; left: 58px; top: 73px; font: 900 57px/1 Geist, sans-serif; letter-spacing: -0.052em;
     color: #24221e; white-space: nowrap; }
   .intro { position: absolute; left: 62px; top: 148px; font-size: 23px; color: #584b39; }
-  .rule { position: absolute; left: 62px; top: 191px; width: 988px; height: 1px; background: #b9aa8d; }
+  .rule { position: absolute; left: 62px; top: 189px; width: 988px; height: 1px; background: #b9aa8d; }
 
-  .card { position: absolute; left: 62px; top: 215px; width: 988px; height: 375px; background: #131916;
-    border-radius: 14px; box-shadow: 6px 6px 0 #c9b796; display: grid; grid-template-columns: 504px 1fr;
+  .card { position: absolute; left: 62px; top: 211px; width: 988px; height: 400px; background: #131916;
+    border-radius: 14px; box-shadow: 6px 6px 0 #c9b796; display: grid; grid-template-columns: 430px 1fr;
     overflow: hidden; }
   .queue { border-right: 1px solid #313b35; }
   .flow { background: #1b2420; }
-  .head { height: 60px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;
+  .head { height: 56px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;
     border-bottom: 1px solid #313b35; }
   .title { font-weight: 700; font-size: 24px; letter-spacing: -0.03em; }
   .plus { color: #b9c0bb; font-size: 26px; line-height: 30px; width: 30px; text-align: center;
     border-radius: 7px; background: #26302b; }
-  .lights { display: flex; gap: 18px; padding: 12px 24px 10px; color: #b9c0bb; font-size: 16px; }
+  .lights { display: flex; gap: 18px; padding: 9px 24px 6px; color: #b9c0bb; font-size: 16px; }
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 10px; margin-right: 7px; }
   .g { background: #2fbf71; } .y { background: #d4a72c; } .r { background: #e5534b; }
   .rows { padding: 0 14px; list-style: none; }
-  .group { padding: 9px 24px 3px; color: #a8b3ac; font-size: 15px; font-weight: 500; }
-  .row { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; border-radius: 8px;
-    font-size: 17px; font-weight: 600; }
+  .group { padding: 8px 24px 2px; color: #a8b3ac; font-size: 14px; font-weight: 500; }
+  .row { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px;
+    font-size: 16px; font-weight: 600; }
   .row.hl { background: #1f2824; }
   .row .dot { flex: none; margin-right: 2px; }
   .row .name { flex: 1; white-space: nowrap; }
-  .row .after { color: #a8b3ac; font-size: 15px; font-weight: 500; margin-left: 4px; }
-  .btn { flex: none; white-space: nowrap; height: 30px; padding: 0 11px; display: flex; align-items: center;
+  .row .after { color: #a8b3ac; font-size: 14px; font-weight: 500; margin-left: 3px; }
+  .btn { flex: none; white-space: nowrap; height: 28px; padding: 0 10px; display: flex; align-items: center;
     border-radius: 7px; background: #2a3530;
-    font-size: 15px; font-weight: 600; color: #f1efe9; }
+    font-size: 14px; font-weight: 600; color: #f1efe9; }
   .btn.auto { background: #1d3328; color: #5fd69a; border: 1px solid #2fbf71; }
-  .merged { color: #76d8a4; font-size: 15px; font-weight: 600; }
+  .merged { color: #76d8a4; font-size: 14px; font-weight: 600; }
+  .pr { color: #7fb4f5; font-size: 14px; font-weight: 600; }
+  .tools { display: flex; gap: 8px; }
+  .icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; background: #26302b;
+    color: #b9c0bb; }
+  .icon.on { background: #2a3d33; color: #8be1b2; box-shadow: 0 0 0 1px #4e7c61; }
 
-  .steps { position: relative; display: grid; gap: 10px; list-style: none; padding: 18px 20px; }
-  .steps::before { content: ""; position: absolute; top: 55px; bottom: 55px; left: 42px;
-    width: 2px; background: #4e7c61; }
-  .step { position: relative; display: grid; grid-template-columns: 46px 1fr; align-items: center; gap: 14px; }
-  .step-icon { display: grid; place-items: center; width: 46px; height: 46px; border: 1px solid #4e7c61;
-    border-radius: 50%; background: #253d31; color: #8be1b2; font: 25px/1 Geist, sans-serif; }
-  .step-copy { min-height: 85px; display: flex; flex-direction: column; justify-content: center; gap: 4px;
-    padding: 12px 15px; border: 1px solid #3a4a41; border-radius: 9px; background: #212d27; }
-  .step-copy h3 { font-size: 20px; letter-spacing: -0.02em; }
-  .step-copy p { font-size: 16px; color: #b5c3b9; }
+  /* The dependency map: drawn like the mod's map dialog. */
+  .map { position: relative; }
+  .legend { display: flex; gap: 14px; align-items: center; padding: 12px 20px 0; font-size: 13px; color: #b9c0bb; white-space: nowrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
+  .legend .hint { color: #7e8a83; }
+  .canvas { position: absolute; left: 0; top: 96px; width: 557px; height: 300px; }
+  .canvas svg { position: absolute; inset: 0; }
+  .band { position: absolute; left: 18px; width: 70px; font-size: 13px; font-weight: 600; line-height: 1.15; }
+  .band small { display: block; margin-top: 3px; font-size: 11px; font-weight: 500; color: #7e8a83; }
+  .sep { position: absolute; left: 16px; right: 14px; height: 1px; background: #313b35; }
+  .node { position: absolute; width: 146px; height: 42px; display: flex; overflow: hidden; border-radius: 8px;
+    border: 1px solid #3a4a41; background: #18201c; }
+  .node.working { border-color: #5b9cf0; }
+  .node > b { flex: none; width: 3px; }
+  .node > span { flex: 1; min-width: 0; padding: 0 9px; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+  .node .t { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node .s { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node.done .t { color: #a8b3ac; }
 </style>
 </head>
 <body>
@@ -89,12 +102,12 @@
 
 <div class="kicker">+ HERDR MOD  /  USAGE QUEUE</div>
 <h1>Queue now. Run on spare allowance.</h1>
-<p class="intro">Chain jobs to pace token use and cut down on manual launches and merges.</p>
+<p class="intro">Chain jobs, see what waits on what, and let each merge launch the next.</p>
 <div class="rule"></div>
 
 <div class="card">
   <section class="queue" aria-labelledby="queue">
-    <header class="head"><h2 class="title" id="queue">Usage Queue</h2><span class="plus" aria-label="Add a job">+</span></header>
+    <header class="head"><h2 class="title" id="queue">Usage Queue</h2><span class="tools"><span class="icon on" aria-label="Dependency map"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="6" height="6" rx="1.5"/><rect x="16" y="3" width="6" height="6" rx="1.5"/><rect x="16" y="15" width="6" height="6" rx="1.5"/><path d="M8 12h2a2 2 0 0 0 2-2V8a2 2 0 0 1 2-2h2"/><path d="M10 12a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2h2"/></svg></span><span class="plus" aria-label="Add a job">+</span></span></header>
     <div class="lights">
       <span><i class="dot g"></i>Claude</span><span><i class="dot r"></i>Codex</span><span><i class="dot y"></i>Antigravity</span>
     </div>
@@ -106,28 +119,25 @@
     <ul class="rows" aria-labelledby="waiting">
       <li class="row"><i class="dot g"></i><span class="name">Enable CI <span class="after">· after Fix flaky tests</span></span><span class="btn auto">Auto after</span></li>
       <li class="row"><i class="dot g"></i><span class="name">Document CI <span class="after">· after Enable CI</span></span><span class="btn auto">Auto after</span></li>
+      <li class="row"><i class="dot g"></i><span class="name">Auth docs <span class="after">· after Migrate auth</span></span><span class="btn auto">Auto after</span></li>
     </ul>
     <h3 class="group" id="launched">Launched</h3>
     <ul class="rows" aria-labelledby="launched">
+      <li class="row"><i class="dot g"></i><span class="name">Migrate auth</span><span class="pr">PR #44 · round 1/3</span></li>
       <li class="row"><i class="dot g"></i><span class="name">Set up test runner</span><span class="merged">Merged #42</span></li>
     </ul>
   </section>
-  <section class="flow" aria-labelledby="flow">
-    <header class="head"><h2 class="title" id="flow">How Auto runs a chain</h2></header>
-    <ol class="steps">
-      <li class="step">
-        <span class="step-icon" aria-hidden="true">◷</span>
-        <div class="step-copy"><h3>Allowance opens</h3><p>Auto launches Fix flaky tests.</p></div>
-      </li>
-      <li class="step">
-        <span class="step-icon" aria-hidden="true">✓</span>
-        <div class="step-copy"><h3>PR auto-merges on approval</h3><p>With PR + merge on 👍 enabled.</p></div>
-      </li>
-      <li class="step">
-        <span class="step-icon" aria-hidden="true">→</span>
-        <div class="step-copy"><h3>Auto starts Enable CI next</h3><p>After the merge, when allowance permits.</p></div>
-      </li>
-    </ol>
+  <section class="flow map" aria-labelledby="map">
+    <header class="head"><h2 class="title" id="map">Dependency map</h2></header>
+    <div class="legend">
+      <span><i style="background:#5b9cf0"></i>Working · 1</span><span><i style="background:#7e8a83"></i>Waiting · 5</span><span><i style="background:#2fbf71"></i>Merged / done · 1</span>
+      <span class="hint">dashed: still waits · green: cleared</span>
+    </div>
+    <div class="canvas">
+      <div class="band" style="top:12px;color:#a8b3ac">Waiting<small>later ↑<br>sooner ↓</small></div><div class="sep" style="top:184px"></div><div class="band" style="top:206px;color:#5b9cf0">Working</div><div class="sep" style="top:246px"></div><div class="band" style="top:260px;color:#2fbf71">Merged / done</div>
+      <svg width="557" height="300" viewBox="0 0 557 300" aria-hidden="true"><path d="M161 174V187" stroke="#7e8a83" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/><path d="M161 194L157 187H165Z" fill="#7e8a83"/><path d="M317 174V249" stroke="#2fbf71" stroke-width="1.6" fill="none"/><path d="M317 256L313 249H321Z" fill="#2fbf71"/><path d="M317 112V125" stroke="#7e8a83" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/><path d="M317 132L313 125H321Z" fill="#7e8a83"/><path d="M317 50V63" stroke="#7e8a83" stroke-width="1.6" fill="none" stroke-dasharray="4 3"/><path d="M317 70L313 63H321Z" fill="#7e8a83"/></svg>
+      <div class="node working" style="left:88px;top:194px"><b style="background:#5b9cf0"></b><span><span class="t">Migrate auth</span><span class="s" style="color:#5b9cf0">PR #44 · round 1/3</span></span></div><div class="node waiting" style="left:88px;top:132px"><b style="background:#7e8a83"></b><span><span class="t">Auth docs</span><span class="s" style="color:#7e8a83">Waits for Migrate auth</span></span></div><div class="node done" style="left:244px;top:256px"><b style="background:#2fbf71"></b><span><span class="t">Set up test runner</span><span class="s" style="color:#2fbf71">Merged #42 · 3h ago</span></span></div><div class="node waiting" style="left:244px;top:132px"><b style="background:#7e8a83"></b><span><span class="t">Fix flaky tests</span><span class="s" style="color:#5fd69a">Auto in 2h 10m</span></span></div><div class="node waiting" style="left:244px;top:70px"><b style="background:#7e8a83"></b><span><span class="t">Enable CI</span><span class="s" style="color:#7e8a83">Waits for Fix flaky tests</span></span></div><div class="node waiting" style="left:244px;top:8px"><b style="background:#7e8a83"></b><span><span class="t">Document CI</span><span class="s" style="color:#7e8a83">Waits for Enable CI</span></span></div><div class="node waiting" style="left:400px;top:132px"><b style="background:#7e8a83"></b><span><span class="t">Write API docs</span><span class="s" style="color:#2fbf71">Ready to launch</span></span></div>
+    </div>
   </section>
 </div>
 </body>
