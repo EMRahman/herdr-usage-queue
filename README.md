@@ -96,7 +96,33 @@ bun herdr-app/install.ts --layout my-layout
 
 It copies `herdr-app/mods/usage-queue/` into `~/.config/herdr-app/mods/` and adds a 230px block
 to the sidebar of a personal layout (after Saved Prompts, or after the spaces and agents lists).
-To remove it, delete the `usage-queue` block from the layout file and the mod folder.
+It also installs the **usage-queue skill** for Claude Code (`~/.claude/skills/`) and, when
+`~/.codex` exists, Codex (`~/.codex/skills/`), so those agents can queue jobs for you
+([below](#queue-jobs-from-an-agent-or-the-command-line)). `--no-skill` leaves it out.
+To remove it, delete the `usage-queue` block from the layout file and the mod folder (and the
+skill's `usage-queue` folders).
+
+## Queue jobs from an agent or the command line
+
+Ask an agent with the skill to "queue this for later", or to "split this into PRs and queue them
+in order". It writes a self-contained prompt and queues the job with the mod's CLI. Jobs still
+appear as **Needs allocation**: the agent queues, you allocate and launch.
+
+```sh
+Q="bun ~/.config/herdr-app/mods/usage-queue/cli.js"
+$Q add --title "Add the schema" --prompt-file plan.md --pr review     # prints the job's id
+$Q add --title "Migrate readers" --prompt "…" --after add-the-schema-mx1a2b3c --pr review
+$Q list                     # every job and where it is: needs-allocation, waiting, working, PR, done…
+$Q status <id>              # one job: allocation, branch, worktree, PR, recent history
+$Q validate                 # check every job file; exits 1 on errors
+```
+
+`add` takes the same choices as the add dialog (`--agents`, `--model claude=opus --effort
+claude=high`, `--priority`, `--permissions`, `--pr`, `--base`, `--after`, `--auto`), uses the repo
+you're in (its main checkout, even from a worktree), and checks the job before writing it: an
+unknown agent, model or effort, an `--after` that names no job or makes a loop, or a repo that
+isn't there is refused. `validate` also warns about fields the queue ignores. `--dry-run` prints
+the file without writing it, and `--json` works on every command. `bun …/cli.js --help` lists it all.
 
 ## A job file
 
@@ -155,5 +181,6 @@ For a custom agent, set its `permissions` field to argv arrays for the profiles 
 ```sh
 bun test                                       # rule, catalog, estimates, queue, git base
 herdr-app check herdr-app/mods/usage-queue     # loads the mod once
+bun herdr-app/mods/usage-queue/cli.js --help     # the CLI, against your real queue
 bun herdr-app/preview/render.ts                # redraws herdr-app/preview.png (needs Chrome)
 ```
