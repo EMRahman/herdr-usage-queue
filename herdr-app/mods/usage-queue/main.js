@@ -1191,10 +1191,13 @@ export default class UsageQueue extends View {
     if (waitingRows.length) {
       rows.push(h_flex().id("waiting-head").px(8).pt(8).pb(2).gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"))
-        .when(waitingRows.length > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim)
-          .tooltip("Newest at the top, oldest at the bottom").child("oldest last ↓")))
         .when(pauseInWaiting, (el) => el.child(pause())));
       rows.push(...waitingRows);
+      if (waitingRows.length > 1) {
+        rows.push(div().id("waiting-order").px(8).pb(2).flex_none().text_size(10.5).text_color(t.dim)
+          .tooltip("The oldest waiting job is directly above. Jobs can launch once their dependencies finish and allowance is available.")
+          .child("↑ Next to be launched"));
+      }
     }
     for (const p of data.problems) {
       rows.push(h_flex().id(`problem-${p.id}`).h(24).px(8).gap(8).items_center().tooltip(`jobs/${p.id}.json: ${p.error}`)
