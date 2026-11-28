@@ -464,7 +464,9 @@ shared("usage-monitor.windows") = {
 **Usage Queue** (the panel header) is a single sidebar list. Jobs appear by priority, with dependent jobs grouped
 under **Waiting for another job**. A row shows **Needs allocation** or launch controls for its
 saved allocation. The job dialog shows manual size choices and an optional estimate.
-**Launched** appears below the queue with recent launches and PR statuses.
+**Launched** appears below the queue with recent launches and PR statuses. The **dependency
+map** (an icon in the header) opens a dialog that draws every job, each beside the job it waits
+for: finished jobs at the bottom, then working, then waiting, latest on top.
 
 - **A traffic light per coding agent** (Claude, Codex, Antigravity, …):
   - **Green (Ready)**: allowance would reset unused.

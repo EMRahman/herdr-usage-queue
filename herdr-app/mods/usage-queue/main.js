@@ -3,27 +3,29 @@
 // Three views of one mod:
 // - the sidebar block (no props): launch queue and recent launches, with a light per agent;
 // - the job dialog ({ dialog: "job", id }): set or estimate the allocation and launch;
-// - the add dialog ({ dialog: "add" }): a new job file.
+// - the add dialog ({ dialog: "add" }): a new job file;
+// - the dependency map ({ dialog: "map" }): every job, each beside the one it waits for.
 //
 // Data lives at module scope, shared by every copy; a change bumps a shared revision so every
 // copy redraws. Slow work (estimates, launches) runs in the sidebar copy, so closing a dialog
 // doesn't cancel it.
 
-import { View, div, svg } from "gpui-kit";
+import { Background, PathBuilder, View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import {
   agents, checking, closeOverlay, exec, focused, knownAgents, notify, openOverlay, panes, pickFolder, props, run,
-  setShared, shared, spaces, terminals, theme, watchFolder,
+  setShared, settings, shared, spaces, terminals, theme, watchFolder,
 } from "herdr";
 import { agentOf, estimatorEffort, launchArgv, mergeCatalog, modelOf, PERMISSION_PROFILES } from "./catalog.js";
 import { cleanUpMerged, cleanupEntry } from "./cleanup.js";
 import { SIZES, SIZE_TEXT } from "./estimate.js";
+import { dependencyMap } from "./graph.js";
 import { fetchPR, findPR, mergePR, myLogin, prHead, prState } from "./github.js";
 import { buildEstimatePrompt, jobTask, launchJob, runEstimate } from "./launch.js";
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
   agentLights, allocationFor, blockedBy, brakeSteps, canBrake, canWaitFor, classify, dueToLaunch, estimatorChoices,
-  isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
+  finishedAt, isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
 } from "./queue.js";
 import { activeRepos, mainCheckout } from "./repos.js";
 import { judgeAll } from "./rule.js";
@@ -933,6 +935,57 @@ const routeText = (route) => {
   return `${agent?.name ?? route.agent} · ${model?.label ?? route.model} · ${route.effort}`;
 };
 
+// --- The dependency map ---
+
+/** Card size and spacing, px. */
+const MAP = { w: 210, h: 48, colGap: 20, rowGap: 36, pad: 16, gutter: 104 };
+
+const MAP_STAGES = {
+  working: { word: "Working", color: (t) => t.working, tip: "Launched: its agent is at work or its PR is open." },
+  waiting: { word: "Waiting", color: (t) => t.dim, tip: "Not launched yet: needs allocation, allowance, or the job it waits for." },
+  done: { word: "Merged / done", color: () => LIGHT.green, tip: "Its PR is merged, its agent finished (no PR), or you marked it finished." },
+};
+
+/** Room the map dialog needs around the map itself: padding, title, legend, border, footer. */
+const MAP_DIALOG = { w: 36 + 2 + 12, h: 36 + 20 + 20 + 24 + 12 + 2 + 42 + 12, minW: 600, minH: 280 };
+
+/** Where the map's rows and columns go, and its size. Rows count up from the bottom: finished
+ *  jobs low, jobs furthest from running on top. */
+function mapGeometry(map) {
+  const x = (col) => MAP.gutter + MAP.pad + col * (MAP.w + MAP.colGap);
+  const y = (row) => MAP.pad + (map.rows - 1 - row) * (MAP.h + MAP.rowGap);
+  return { x, y, width: x(map.cols) - MAP.colGap + MAP.pad, height: y(-1) - MAP.rowGap + MAP.pad };
+}
+
+/** A map card's second line: where the job is, and in what colour. */
+function mapStatus(t, { job, stage }) {
+  const s = jobState(job.id);
+  if (stage === "done") {
+    const w = s.launched.pr;
+    const text = s.launched.markedFinishedAt ? "Marked finished"
+      : w && w.mode !== "off" ? `Merged #${w.number ?? "?"}` : "Finished";
+    const at = finishedAt(s);
+    return { text: at ? `${text} · ${ago(at)}` : text, color: LIGHT.green };
+  }
+  if (stage === "working") {
+    const brake = brakeStatus(s.launched);
+    const w = s.launched.pr;
+    if (brake) return { text: brake, color: LIGHT.yellow };
+    if (w?.phase === "needs-you") return { text: prStatus(w), color: LIGHT.yellow };
+    return { text: w ? prStatus(w) : `Working · ${ago(s.launched.at)}`, color: t.working };
+  }
+  const wait = blockedBy(job, data.jobs, data.state);
+  const allocation = allocationFor(job, data.state);
+  if (running.launches.has(job.id)) return { text: "Launching…", color: t.working };
+  if (wait) return { text: `Waits for ${wait.job.title}`, color: t.dim };
+  if (!allocation) return { text: "Needs allocation", color: t.dim };
+  const j = jobLight(job);
+  if (allocation.auto) {
+    return { text: data.state.paused ? "Auto · paused" : j.light === "red" ? `Auto ${whenOpen(j)}`.trim() : "Auto now", color: t.accent };
+  }
+  return j.light === "red" ? { text: "Not yet · no allowance", color: t.dim } : { text: "Ready to launch", color: LIGHT[j.light] };
+}
+
 // --- The view ---
 
 export default class UsageQueue extends View {
@@ -940,6 +993,7 @@ export default class UsageQueue extends View {
     const p = props() ?? {};
     if (p.dialog === "add") return this.initAdd(cx);
     if (p.dialog === "job") return this.initJob(cx);
+    if (p.dialog === "map") return loadIfNeeded(cx);
 
     if (checking()) return;
     workers++;
@@ -985,6 +1039,21 @@ export default class UsageQueue extends View {
   openJob(id) {
     // A fixed share of the window: the middle scrolls, the title and buttons stay put.
     openOverlay({ mod: ID, kind: "dialog", width: 580, height: 0.85, props: { dialog: "job", id } });
+  }
+
+  /** The map dialog, as big as the map needs (at most 90% of the window), centered. */
+  openMap() {
+    const { width, height } = mapGeometry(dependencyMap(data.jobs, data.state));
+    let w = Math.max(MAP_DIALOG.minW, width + MAP_DIALOG.w), h = Math.max(MAP_DIALOG.minH, height + MAP_DIALOG.h);
+    try {
+      const view = globalThis.window?.viewport_size?.();
+      const zoom = Number(settings()?.zoom) || 1;
+      if (view?.width && view?.height) {
+        w = Math.min(w, (view.width / zoom) * 0.9);
+        h = Math.min(h, (view.height / zoom) * 0.9);
+      }
+    } catch { /* no window size: the dialog's own scrollbars cope */ }
+    openOverlay({ mod: ID, kind: "dialog", width: Math.round(w), height: Math.round(h), props: { dialog: "map" } });
   }
 
   openAdd() {
@@ -1090,6 +1159,10 @@ export default class UsageQueue extends View {
     const lists = classify(data.jobs, data.state);
     const header = h_flex().h(34).pl(16).pr(8).flex_none().items_center().gap(2)
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).font_medium().text_color(t.dim).child("Usage Queue"))
+      .when(data.jobs.length > 0, (el) => el.child(div().id("open-map").size(24).flex_none().flex().items_center().justify_center()
+        .rounded(6).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Dependency map: what's working, what's waiting, and what's merged").on_click(() => this.openMap())
+        .child(svg("mods/usage-queue/map.svg").size(14))))
       .child(div().id("add-job").size(24).flex_none().flex().items_center().justify_center().rounded(6)
           .text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
           .tooltip(draft ? "Add a job (continue your draft)" : "Add a job").on_click(() => this.openAdd())
@@ -1131,6 +1204,94 @@ export default class UsageQueue extends View {
       .when(showPause && !pauseInWaiting, (el) => el.child(h_flex().px(16).pb(4).justify_end().child(pause())))
       .child(this.lightsRow(t))
       .child(v_flex().id("rows").flex_1().min_h(0).px(8).pb(8).overflow_y_scrollbar().children(rows));
+  }
+
+  // ---------- Dependency map ----------
+
+  /** One job on the map: a card with a stripe in its stage's colour, its title and where it is. */
+  mapNode(t, node, x, y) {
+    const { job, stage } = node;
+    const { text, color } = mapStatus(t, node);
+    return h_flex().id(`map-${job.id}`).absolute().left(x).top(y).w(MAP.w).h(MAP.h).rounded(8).border_1()
+      .border_color(stage === "working" ? t.working : t.border).bg(t.background).overflow_hidden()
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${job.title}\n${text}\nClick to open.`)
+      .on_click(() => this.openJob(job.id))
+      .child(div().w(3).h_full().flex_none().bg(MAP_STAGES[stage].color(t)))
+      .child(v_flex().flex_1().min_w(0).px(10).gap(2).justify_center()
+        .child(div().min_w(0).truncate().text_size(12.5).text_color(stage === "done" ? t.muted : t.foreground).child(job.title))
+        .child(div().min_w(0).truncate().text_size(11).text_color(color).child(text)));
+  }
+
+  /** The arrows: from the bottom of the job waiting down to the top of the job it waits for.
+   *  Solid green once that job is finished, dashed while it isn't. */
+  mapEdges(t, map, spot) {
+    const paint = globalThis.window?.paint_path;
+    if (typeof paint !== "function" || typeof PathBuilder?.stroke !== "function" || !map.edges.length) return [];
+    const els = [];
+    for (const met of [false, true]) {
+      const edges = map.edges.filter((e) => e.met === met);
+      if (!edges.length) continue;
+      let line = PathBuilder.stroke(1.5);
+      if (!met) line = line.dash_array([4, 3]);
+      let heads = PathBuilder.fill();
+      for (const e of edges) {
+        // From the job waiting (a) to the job it waits for (b), where the head is.
+        const a = spot(e.to), b = spot(e.from);
+        const x1 = a.x + MAP.w / 2, x2 = b.x + MAP.w / 2;
+        // Normally the job waited for is lower down; a dependency set after launch can point up.
+        const down = b.y > a.y;
+        const y1 = down ? a.y + MAP.h : a.y, tip = down ? b.y : b.y + MAP.h;
+        const y2 = down ? tip - 7 : tip + 7, bend = (down ? 1 : -1) * MAP.rowGap / 2;
+        line = line.move_to(x1, y1).cubic_bezier_to(x2, y2, x1, y1 + bend, x2, y2 - bend);
+        heads = heads.add_polygon([[x2, tip], [x2 - 4, y2], [x2 + 4, y2]], true);
+      }
+      const color = met ? LIGHT.green : t.dim;
+      els.push(globalThis.window.paint_path(line.build(), color).absolute().inset_0());
+      els.push(globalThis.window.paint_path(heads.build(), color).absolute().inset_0());
+    }
+    return els;
+  }
+
+  renderMap(t) {
+    const p = props();
+    const map = dependencyMap(data.jobs, data.state);
+    const { x, y, width, height } = mapGeometry(map);
+    const byId = new Map(map.nodes.map((n) => [n.job.id, { x: x(n.col), y: y(n.row) }]));
+    const legend = h_flex().pt(6).gap(14).items_center().flex_wrap().children(Object.entries(MAP_STAGES).map(([stage, s]) =>
+      h_flex().id(`legend-${stage}`).gap(6).items_center().tooltip(s.tip)
+        .child(div().w(10).h(10).rounded(3).bg(s.color(t)))
+        .child(div().text_size(11.5).text_color(t.muted).child(`${s.word} · ${map.counts[stage]}`))))
+      .child(div().text_size(11.5).text_color(t.dim).child("dashed: still waits · green: cleared"));
+    // Each band: its name in the gutter beside its top row, and a line above it.
+    const bands = map.bands.flatMap((b, i) => {
+      const top = y(b.to);
+      const s = MAP_STAGES[b.stage];
+      const els = [v_flex().id(`band-${b.stage}`).absolute().left(MAP.pad).top(top).w(MAP.gutter - 8).h(MAP.h).justify_center()
+        .tooltip(s.tip)
+        .child(div().text_size(11.5).font_medium().text_color(s.color(t)).child(s.word))
+        .when(b.stage === "waiting" && b.to > b.from, (el) => el.child(div().text_size(10.5).text_color(t.dim).child("later ↑ · sooner ↓")))];
+      if (i < map.bands.length - 1) {
+        els.push(div().absolute().left(MAP.pad).top(top - MAP.rowGap / 2).w(width - MAP.pad * 2).h(1).bg(t.border));
+      }
+      return els;
+    });
+    const canvas = map.nodes.length
+      ? div().relative().flex_none().w(width).h(height)
+        .children(bands)
+        .children(this.mapEdges(t, map, (id) => byId.get(id)))
+        .children(map.nodes.map((n) => this.mapNode(t, n, x(n.col), y(n.row))))
+      : div().p(MAP.pad).text_size(12).text_color(t.dim).child(data.loaded ? "No jobs yet. Click + to add one." : "Loading…");
+    return v_flex().id("map-dialog").size_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground).text_size(13)
+      .child(h_flex().items_center().gap(8)
+        .child(div().flex_1().min_w(0).text_size(15).font_semibold().child("Dependency map"))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(div().pt(4).text_size(11.5).text_color(t.dim)
+        .child("Each job sits above the job it waits for. Click a job to open it."))
+      .child(legend)
+      .child(div().id("map-scroll-y").mt(12).flex_1().min_h(0).rounded(8).border_1().border_color(t.border).bg(t.canvas)
+        .overflow_y_scrollbar()
+        .child(div().id("map-scroll-x").w_full().overflow_x_scrollbar().child(canvas)))
+      .child(h_flex().pt(12).child(div().flex_1()).child(button(t, "close", "Close", "secondary", () => closeOverlay(p.overlay))));
   }
 
   // ---------- Job dialog ----------
@@ -1730,6 +1891,7 @@ export default class UsageQueue extends View {
     const p = props() ?? {};
     if (p.dialog === "add") return this.renderAdd(t);
     if (p.dialog === "job") return this.renderJob(t);
+    if (p.dialog === "map") return this.renderMap(t);
     return this.renderSidebar(t);
   }
 }
