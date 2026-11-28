@@ -16,7 +16,8 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
 - **Header**, 34px, 16px left padding, 8px right: `Usage Queue` at 11.5px medium in `dim`
   a **Dependency map** button (shown once there's a job) and an **Add a job** button. Each is a
   24px square, radius 6, with a 14px icon: the mod's own `map.svg`, and `plus.svg`.
-  When any job is on Auto, a "Pause auto" switch sits below the header at the right.
+  When any job is on Auto, a "Pause auto" switch sits at the right of the "Waiting for another
+  job" heading, or below the header at the right when no job is waiting.
   While paused it reads "Paused · resume" in yellow.
 - **Lights**, 16px side padding, 12px apart: one per coding agent that has a reading (Claude,
   Codex, Antigravity): an 8px dot and its name at 11.5px in `muted`. Hover: the agent's verdict
