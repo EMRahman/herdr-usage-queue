@@ -25,7 +25,7 @@ import { buildEstimatePrompt, jobTask, launchJob, runEstimate } from "./launch.j
 import { MAX_ROUNDS, reviewStep, roundMessage, sendArgs } from "./review.js";
 import {
   agentLights, allocationFor, blockedBy, brakeSteps, canBrake, canWaitFor, classify, dueToLaunch, estimatorChoices,
-  finishedAt, isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
+  finishedAt, isFinished, jobId, newestFirst, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
 } from "./queue.js";
 import { activeRepos, mainCheckout } from "./repos.js";
 import { judgeAll } from "./rule.js";
@@ -880,11 +880,14 @@ const elapsed = (ms) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : duration(ms
 
 const dot = (light, size = 8) => div().size(size).flex_none().rounded(size).bg(LIGHT[light] ?? "#888888");
 
-/** "Wait for": Nothing, or one of the jobs it can wait for. pick(id or null, cx). */
+/** "Wait for": Nothing, or one of the jobs it can wait for, newest first so the oldest is the
+ *  last chip (marked as such). pick(id or null, cx). */
 function waitChips(t, after, options, pick) {
+  const sorted = newestFirst(options);
   return h_flex().gap(6).flex_wrap().items_center()
     .child(chip(t, "after-none", "Nothing", !after, (_e, cx) => pick(null, cx)))
-    .children(options.map((o) => chip(t, `after-${o.id}`, o.title, after === o.id, (_e, cx) => pick(o.id, cx), o.id)));
+    .children(sorted.map((o) => chip(t, `after-${o.id}`, o.title, after === o.id, (_e, cx) => pick(o.id, cx), o.id)))
+    .when(sorted.length > 1, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("← oldest")));
 }
 
 function button(t, id, text, style, action, disabled = false) {
@@ -1168,12 +1171,15 @@ export default class UsageQueue extends View {
           .tooltip(draft ? "Add a job (continue your draft)" : "Add a job").on_click(() => this.openAdd())
           .child(svg("mods/workspace-chrome/plus.svg").size(14)));
 
-    const rows = [], waitingRows = [];
+    // Ready jobs keep the queue's order; waiting ones go newest first, so the oldest is at the bottom.
+    const rows = [], waiting = [];
     for (const job of lists.queued) {
       const wait = blockedBy(job, data.jobs, data.state);
-      const row = this.jobRow(t, job, "queued", wait);
-      (wait ? waitingRows : rows).push(row);
+      if (wait) waiting.push({ job, wait });
+      else rows.push(this.jobRow(t, job, "queued", wait));
     }
+    const byJob = new Map(waiting.map((w) => [w.job, w.wait]));
+    const waitingRows = newestFirst(waiting.map((w) => w.job)).map((job) => this.jobRow(t, job, "queued", byJob.get(job)));
     const showPause = hasScheduled() || lists.launched.some((job) => jobState(job.id).launched.braked && canBrake(jobState(job.id)));
     const pause = () => div().id("pause").flex_none().text_size(11).cursor_pointer()
       .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
@@ -1185,6 +1191,8 @@ export default class UsageQueue extends View {
     if (waitingRows.length) {
       rows.push(h_flex().id("waiting-head").px(8).pt(8).pb(2).gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"))
+        .when(waitingRows.length > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim)
+          .tooltip("Newest at the top, oldest at the bottom").child("oldest last ↓")))
         .when(pauseInWaiting, (el) => el.child(pause())));
       rows.push(...waitingRows);
     }
@@ -1872,7 +1880,7 @@ export default class UsageQueue extends View {
         this.prMode === m, (_e, cx) => { this.prMode = m; this.keepDraft(cx); cx.notify(); },
         m === "off" ? null : `Open a PR, then address review comments (up to ${MAX_ROUNDS} rounds)${m === "merge" ? " and merge it on a 👍" : ""}.`))))
       .when(waitOptions.length > 0, (el) => el
-        .child(label("Wait for (launches only once that job is finished)"))
+        .child(label("Wait for (launches only once that job is finished; newest first, oldest last)"))
         .child(waitChips(t, afterId, waitOptions, (id, cx) => { this.afterId = id; this.keepDraft(cx); cx.notify(); })))
       .when(Boolean(this.error), (el) => el.child(div().pt(10).text_size(12).text_color(LIGHT.red).child(this.error)))
       .child(div().pt(10).text_size(11).text_color(t.dim)
