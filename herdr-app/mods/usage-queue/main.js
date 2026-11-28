@@ -45,7 +45,7 @@ const PR_DONE = new Set(["merged", "closed", "needs-you", "ended"]);
 /** A PR the queue stopped working on but that's still open: checked now and then for a merge,
  *  so a job waiting on it starts when you merge it yourself. */
 const PR_LATE = new Set(["needs-you", "ended"]);
-const LATE_POLL_MS = 10 * 60_000;
+const LATE_POLL_MS = 60_000;
 const LATE_FOR_MS = 12 * 3_600_000;
 const PR_MODE_TEXT = { off: "No PR", review: "Open a PR", merge: "PR + merge on 👍" };
 const BUSY_MS = 50_000;
