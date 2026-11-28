@@ -1101,8 +1101,18 @@ export default class UsageQueue extends View {
       const row = this.jobRow(t, job, "queued", wait);
       (wait ? waitingRows : rows).push(row);
     }
+    const showPause = hasScheduled() || lists.launched.some((job) => jobState(job.id).launched.braked && canBrake(jobState(job.id)));
+    const pause = () => div().id("pause").flex_none().text_size(11).cursor_pointer()
+      .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
+      .tooltip(data.state.paused ? "Auto launches and resumes are paused. Click to continue." : "Pause Auto launches and resumes")
+      .on_click((_e, cx) => cx.spawn(async () => setPaused(!data.state.paused)))
+      .child(data.state.paused ? "Paused · resume" : "Pause auto");
+    // With jobs waiting, the pause switch shares their heading's line instead of taking its own.
+    const pauseInWaiting = showPause && waitingRows.length > 0;
     if (waitingRows.length) {
-      rows.push(div().id("waiting-head").px(8).pt(8).pb(2).text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"));
+      rows.push(h_flex().id("waiting-head").px(8).pt(8).pb(2).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11).font_medium().text_color(t.dim).child("Waiting for another job"))
+        .when(pauseInWaiting, (el) => el.child(pause())));
       rows.push(...waitingRows);
     }
     for (const p of data.problems) {
@@ -1118,13 +1128,7 @@ export default class UsageQueue extends View {
     return v_flex().id("root")
       .size_full().min_h(0).bg(t.chrome).border_t(1).border_color(t.border).text_size(13)
       .child(header)
-      .when(hasScheduled() || lists.launched.some((job) => jobState(job.id).launched.braked && canBrake(jobState(job.id))),
-        (el) => el.child(h_flex().px(16).pb(4).justify_end().child(
-          div().id("pause").text_size(11).cursor_pointer()
-            .text_color(data.state.paused ? LIGHT.yellow : t.dim).hover((st) => st.text_color(t.foreground))
-            .tooltip(data.state.paused ? "Auto launches and resumes are paused. Click to continue." : "Pause Auto launches and resumes")
-            .on_click((_e, cx) => cx.spawn(async () => setPaused(!data.state.paused)))
-            .child(data.state.paused ? "Paused · resume" : "Pause auto"))))
+      .when(showPause && !pauseInWaiting, (el) => el.child(h_flex().px(16).pb(4).justify_end().child(pause())))
       .child(this.lightsRow(t))
       .child(v_flex().id("rows").flex_1().min_h(0).px(8).pb(8).overflow_y_scrollbar().children(rows));
   }
