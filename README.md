@@ -66,6 +66,11 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    click **Mark finished** in the launched job's dialog, or **Mark <job> finished** in the
    waiting job's.
 
+   The **dependency map** (the icon beside **+**) draws every job as a card, each above the job
+   it waits for: **Merged / done** at the bottom, **Working** above, then **Waiting**, with the
+   jobs furthest from running at the top. A dashed arrow is a wait still in force; a solid green
+   one has cleared. Click a card to open its job.
+
 Editing a job file resets its allocation and Auto setting. Its queue row shows **Needs allocation**.
 
 ## The lights
