@@ -47,8 +47,11 @@ space. Allowance comes from [Usage Monitor](https://github.com/EMRahman/herdr-us
     radius 6) for the chosen one.
   - Footer buttons include **Delete job**, **Save allocation**, **Auto** and **Launch**.
     Saved allocations can be cleared, and scheduled jobs show **Cancel Auto**.
-- **The add dialog** (560px): Title, Prompt (150px), Repository (the focused pane's folder, or
-  **Choose…**), agent chips (not-installed ones marked), Priority chips (1 high, 2 normal,
+- **The add dialog** (560px): Title, Prompt (150px), Repository: up to six repo chips
+  (24px, radius 6, the folder name; hover for the path), the focused pane's repo first and
+  selected, then repos open in local spaces or panes, then recent jobs' repos. Worktrees and
+  subfolders count as their repo's main checkout, and folders outside a git repo are left out.
+  **Choose…** picks any folder, and the chosen path shows below at 11.5px. Then agent chips (not-installed ones marked), Priority chips (1 high, 2 normal,
   3 low), **Clear** when anything is typed, **Close** and **Add to queue** (⌘↵).
 
 ## How it behaves
