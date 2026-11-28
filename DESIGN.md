@@ -544,7 +544,9 @@ and the job format must not depend on the mod runtime, so a daemon can be added 
    model (or coding agent) turns the details into a prompt, and the job is queued with its
    size, route, repeat and deadline. The job's title is generated from its content, so it
    doesn't need to be typed (built in the add dialog: a small model suggests it from the
-   prompt, and a typed title overrides it). Also: cost learning per size and route, and background and space
-   runs.
+   prompt, and a typed title overrides it). Agents can queue jobs (built: the usage-queue skill
+   drives `cli.js add`, which checks a job as the mod reads it and writes it atomically; `list`
+   and `status` report back). Allocation stays with you. Also: cost learning per size and route,
+   and background and space runs.
 6. Later: global auto approval, learned `expectedUse`, daemon mode (with the move to a
    database), held-reset suggestions.

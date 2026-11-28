@@ -1,7 +1,10 @@
 // Installs Usage Queue into the Herdr app: copies the mod and adds its block to the sidebar of a
 // personal layout (the one on screen, or --layout <name>).
 //
-//   bun herdr-app/install.ts [--layout <name>]
+//   bun herdr-app/install.ts [--layout <name>] [--no-skill]
+//
+// Also installs the usage-queue skill for Claude Code (and Codex, when ~/.codex exists), so an
+// agent can queue jobs with the mod's cli.js. --no-skill leaves it out.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -12,6 +15,7 @@ const home = resolve(process.env.HERDR_APP_HOME || join(homedir(), ".config", "h
 const source = join(import.meta.dir, "mods", MOD);
 const destination = join(home, "mods", MOD);
 const SHIPPED = new Set(["main", "terminals", "win98"]);
+const SKILL = join(import.meta.dir, "skills", MOD, "SKILL.md");
 
 interface LayoutNode {
   id?: string;
@@ -81,6 +85,26 @@ function shownLayout(): string | null {
   }
 }
 
+/** Where agents look for skills: Claude Code always, Codex when it's set up. */
+function skillFolders(): string[] {
+  const claude = resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"));
+  const codex = resolve(process.env.CODEX_HOME || join(homedir(), ".codex"));
+  return [join(claude, "skills", MOD), ...(existsSync(codex) ? [join(codex, "skills", MOD)] : [])];
+}
+
+/** Writes the skill with the command filled in: this Bun and the installed cli.js, both absolute,
+ *  so it works from any agent's shell whatever its PATH. */
+function installSkill() {
+  const quote = (s: string) => (/^[\w./~-]+$/.test(s) ? s : `"${s}"`);
+  const cli = `${quote(process.execPath)} ${quote(join(destination, "cli.js"))}`;
+  const text = readFileSync(SKILL, "utf8").replaceAll("{{cli}}", cli);
+  for (const folder of skillFolders()) {
+    mkdirSync(folder, { recursive: true });
+    const wrote = writeIfChanged(join(folder, "SKILL.md"), text);
+    console.log(`${wrote ? "Installed" : "Already installed:"} the usage-queue skill in ${folder}`);
+  }
+}
+
 function install() {
   if (!existsSync(join(home, "layouts"))) throw new Error("Open the Herdr app once to set up its configuration, then rerun this.");
   if (!existsSync(join(home, "mods", "usage-monitor", "bridge.js"))) {
@@ -107,6 +131,8 @@ function install() {
     const check = Bun.spawnSync([herdrApp, "check", destination], { stdout: "pipe", stderr: "pipe" });
     if (check.exitCode !== 0) throw new Error(`herdr-app check failed:\n${check.stderr.toString() || check.stdout.toString()}`);
   }
+
+  if (!process.argv.includes("--no-skill")) installSkill();
 
   const tree = JSON.parse(readFileSync(layoutPath, "utf8")) as LayoutNode;
   // Reinstalling puts the block back in its place, as a weighted share (earlier installs used
