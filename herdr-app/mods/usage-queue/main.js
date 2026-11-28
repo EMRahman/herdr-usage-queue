@@ -1443,12 +1443,17 @@ export default class UsageQueue extends View {
   /** The job's prompt; until the job launches, an editor for it. Saving rewrites the job file,
    *  which (like any edit of the file) clears a saved allocation. */
   promptSection(t, job, allocation, launched) {
+    // A launch that starts while the editor is open runs the prompt as it was: editing it then
+    // would make the running job look queued again.
+    const started = (j) => running.launches.has(j.id)
+      || Boolean(allocationFor(j, data.state) && currentVersion(j, jobState(j.id).launched));
+    if (this.promptEdit && !this.promptEdit.saving && started(job)) this.promptEdit = null;
     const edit = this.promptEdit;
     if (!edit) {
       return [
         div().id("prompt").mt(10).p(10).max_h(150).overflow_y_scrollbar().rounded(8).border_1().border_color(t.border)
           .bg(t.background).text_size(12).text_color(t.foreground).child(job.prompt),
-        ...(launched ? [] : [h_flex().pt(6).child(chip(t, "edit-prompt", "Edit prompt", false, (_e, cx) => {
+        ...(launched || started(job) ? [] : [h_flex().pt(6).child(chip(t, "edit-prompt", "Edit prompt", false, (_e, cx) => {
           const state = TextareaState.new({ value: job.prompt, rows: 7 });
           state.on("change", (_e, cx) => cx.notify());
           this.promptEdit = { state, saving: false, error: null };
@@ -1461,7 +1466,14 @@ export default class UsageQueue extends View {
     const save = (cx) => cx.spawn(async (cx) => {
       const text = edit.state.value().trim();
       if (!text || edit.saving) return;
-      if (text === job.prompt) { this.promptEdit = null; cx.notify(); return; }
+      if (text === job.prompt || started(job)) { this.promptEdit = null; cx.notify(); return; }
+      // Held like an allocation change, so no launch (Auto included) starts while the file is rewritten.
+      if (running.launches.has(job.id) || running.allocations.has(job.id) || running.deletions.has(job.id)) {
+        edit.error = "The job is busy; try again in a moment.";
+        cx.notify();
+        return;
+      }
+      running.allocations.add(job.id);
       edit.saving = true;
       edit.error = null;
       cx.notify();
@@ -1476,6 +1488,9 @@ export default class UsageQueue extends View {
       } catch (e) {
         edit.saving = false;
         edit.error = String(e?.message ?? e);
+      } finally {
+        running.allocations.delete(job.id);
+        changed();
       }
       cx.notify();
     });
