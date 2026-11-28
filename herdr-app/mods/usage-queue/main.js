@@ -32,7 +32,7 @@ import { judgeAll } from "./rule.js";
 import { suggestTitle, titleChoices } from "./title.js";
 import {
   deleteJob, ensureFolders, expandHome, loadCatalog, loadDraft, loadJobs, loadState, paths, readPools, record, saveDraft,
-  updateState, writeNewJob,
+  rewriteJob, updateState, writeNewJob,
 } from "./store.js";
 import { ago, duration } from "./time.js";
 
@@ -1440,6 +1440,57 @@ export default class UsageQueue extends View {
     return els;
   }
 
+  /** The job's prompt; until the job launches, an editor for it. Saving rewrites the job file,
+   *  which (like any edit of the file) clears a saved allocation. */
+  promptSection(t, job, allocation, launched) {
+    const edit = this.promptEdit;
+    if (!edit) {
+      return [
+        div().id("prompt").mt(10).p(10).max_h(150).overflow_y_scrollbar().rounded(8).border_1().border_color(t.border)
+          .bg(t.background).text_size(12).text_color(t.foreground).child(job.prompt),
+        ...(launched ? [] : [h_flex().pt(6).child(chip(t, "edit-prompt", "Edit prompt", false, (_e, cx) => {
+          const state = TextareaState.new({ value: job.prompt, rows: 7 });
+          state.on("change", (_e, cx) => cx.notify());
+          this.promptEdit = { state, saving: false, error: null };
+          state.focus();
+          cx.notify();
+        }, allocation ? "Saving an edit clears this job's allocation and Auto." : null))]),
+      ];
+    }
+    const text = edit.state.value().trim();
+    const save = (cx) => cx.spawn(async (cx) => {
+      const text = edit.state.value().trim();
+      if (!text || edit.saving) return;
+      if (text === job.prompt) { this.promptEdit = null; cx.notify(); return; }
+      edit.saving = true;
+      edit.error = null;
+      cx.notify();
+      try {
+        const hash = await rewriteJob(job, (raw) => { raw.prompt = text; });
+        // Keep the choices made in this dialog: the edit is ours, not a different job.
+        this.editHash = hash;
+        this.preview = "";
+        this.promptEdit = null;
+        await record({ type: "edited", job: job.id });
+        await reloadJobs();
+      } catch (e) {
+        edit.saving = false;
+        edit.error = String(e?.message ?? e);
+      }
+      cx.notify();
+    });
+    return [
+      Textarea.new(edit.state).mt(10).w_full().h(150).p(10).rounded(8).border_1().border_color(t.input)
+        .bg(t.background).text_size(12),
+      h_flex().pt(6).gap(8).items_center()
+        .child(div().flex_1().text_size(11.5).text_color(edit.error ? LIGHT.yellow : t.dim).child(edit.error
+          ?? (allocation ? "Saving clears this job's allocation and Auto; choose them again after." : "")))
+        .child(button(t, "cancel-prompt", "Cancel", "secondary", (_e, cx) => { this.promptEdit = null; cx.notify(); }))
+        .child(button(t, "save-prompt", edit.saving ? "Saving…" : "Save prompt", "primary", (_e, cx) => save(cx),
+          edit.saving || !text)),
+    ];
+  }
+
   allocationSection(t, job, route) {
     const s = jobState(job.id);
     const estimate = currentVersion(job, s.estimate);
@@ -1487,6 +1538,7 @@ export default class UsageQueue extends View {
       this.after = this.pr = undefined;
       this.preview = "";
       this.showEstimator = false;
+      this.promptEdit = null;
     }
     const s = jobState(job.id);
     const allocation = allocationFor(job, data.state);
@@ -1506,8 +1558,7 @@ export default class UsageQueue extends View {
       div().pt(2).text_size(11.5).text_color(t.dim).child(`Starts from ${BASE_TEXT(job.base)}, taken when it launches.`),
       div().pt(2).text_size(11.5).text_color(t.dim)
         .child(`Permissions · ${PERMISSION_PROFILES[launched ? launched.permissions ?? "default" : job.permissions].label}`),
-      div().id("prompt").mt(10).p(10).max_h(150).overflow_y_scrollbar().rounded(8).border_1().border_color(t.border)
-        .bg(t.background).text_size(12).text_color(t.foreground).child(job.prompt),
+      ...this.promptSection(t, job, allocation, launched),
     ];
 
     if (allocation) {

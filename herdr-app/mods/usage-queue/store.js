@@ -105,6 +105,19 @@ export async function writeNewJob(id, text) {
   await writeTextFile(`${paths().jobs}/${id}.json`, text, null);
 }
 
+/** Changes a job file's fields in place, keeping the rest. Refuses if the file changed since
+ *  `job` was read (job.hash), so an edit made elsewhere isn't overwritten. Resolves with the new hash. */
+export async function rewriteJob(job, change) {
+  const text = await readTextFile(job.file);
+  if (text === null) throw new Error("The job file is gone.");
+  if (hashText(text) !== job.hash) throw new Error("The job file changed since it was opened. Close the job and open it again.");
+  const raw = JSON.parse(text);
+  change(raw);
+  const next = JSON.stringify(raw, null, 2) + "\n";
+  await writeTextFile(job.file, next, text);
+  return hashText(next);
+}
+
 export async function deleteJob(id) {
   await fs.unlink(`${paths().jobs}/${id}.json`);
   await updateState((s) => { delete s.jobs[id]; });

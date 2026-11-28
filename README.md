@@ -71,7 +71,9 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
    jobs furthest from running at the top. A dashed arrow is a wait still in force; a solid green
    one has cleared. Click a card to open its job.
 
-Editing a job file resets its allocation and Auto setting. Its queue row shows **Needs allocation**.
+To change a job's prompt before it launches, click **Edit prompt** under it in the job's dialog,
+then **Save prompt**. That rewrites the job file. Editing a job file, there or by hand, resets its
+allocation and Auto setting. Its queue row shows **Needs allocation**.
 
 ## The lights
 
