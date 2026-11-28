@@ -23,6 +23,8 @@ See [DESIGN.md](DESIGN.md) for the design and what's still to come.
 1. **Add a job** with **+**, or write a JSON file into `~/.config/herdr-app/usage-queue/jobs/`.
    Write the prompt first: the cheapest installed model with allowance (Haiku, say) suggests a
    title from it. Type your own title to override the suggestion, or clear it to get one back.
+   Pick the repo from the ones open in Herdr or used by recent jobs (the focused pane's comes
+   first), or **Choose…** another folder.
    The job appears in **Usage Queue** with a **Needs allocation** marker.
 2. **Set the size** in the job dialog. Choose **Small**, **Medium** or **Large**, and check the
    agent, model and effort. **Estimate with a model** can suggest those settings using

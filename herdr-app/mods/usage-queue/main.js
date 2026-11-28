@@ -25,6 +25,7 @@ import {
   agentLights, allocationFor, blockedBy, brakeSteps, canBrake, canWaitFor, classify, dueToLaunch, estimatorChoices,
   isFinished, jobId, jobText, pinnedRoute, proposeRoute, routeOptions, routeStatus, settlingPools, waitFor,
 } from "./queue.js";
+import { activeRepos, mainCheckout } from "./repos.js";
 import { judgeAll } from "./rule.js";
 import { suggestTitle, titleChoices } from "./title.js";
 import {
@@ -626,6 +627,25 @@ async function closeFolder(folder) {
 async function gitIn(cwd, args, timeout = 30_000) {
   const r = await exec("git", args, { cwd, timeout });
   return { ok: r.code === 0, out: r.stdout.trim(), err: r.stderr.trim() };
+}
+
+/** Each folder's main checkout (or null), by folder: asked once per folder while the mod runs. */
+const checkouts = new Map();
+const checkoutOf = (folder) => {
+  const path = expandHome(folder);
+  if (!checkouts.has(path)) checkouts.set(path, mainCheckout(gitIn, path).catch(() => null));
+  return checkouts.get(path);
+};
+
+/** Repos for the add dialog: the focused pane's, those open in spaces, then recent jobs'. */
+function repoChoices(focusedFolder) {
+  const open = [];
+  for (const sp of spaces()) if (!sp.machine && sp.folder) open.push(sp.folder);
+  for (const p of panes()) if (p.cwd) open.push(p.cwd);
+  const recent = [...data.jobs]
+    .sort((a, b) => (data.state.jobs[b.id]?.createdAt ?? 0) - (data.state.jobs[a.id]?.createdAt ?? 0))
+    .map((j) => j.repo);
+  return activeRepos([focusedFolder, ...open, ...recent].map(expandHome), checkoutOf);
 }
 
 /** Removes merged jobs' worktrees and branches when nothing would be lost (see cleanup.js). */
@@ -1473,7 +1493,14 @@ export default class UsageQueue extends View {
     });
     const f = focused();
     this.focusedRepo = (f?.pane && panes().find((pn) => pn.pane === f.pane)?.cwd) || "";
+    this.repos = null;
     this.applyDraft(draft);
+    cx.spawn(async (cx) => {
+      this.repos = await repoChoices(this.focusedRepo);
+      // The focused pane's folder becomes its repo's main checkout, or nothing outside a repo.
+      if (this.repo === this.focusedRepo) this.repo = this.repos.find((r) => r.folders.includes(this.repo))?.path ?? "";
+      cx.notify();
+    });
     this.installed = null;
     this.error = "";
     if (checking()) return;
@@ -1648,13 +1675,16 @@ export default class UsageQueue extends View {
             "Replace this title with one suggested from the prompt.")))))
       .child(Input.new(this.title).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(12.8))
       .child(label("Repository (runs in a new worktree)"))
-      .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(this.repo ? t.foreground : t.dim)
-          .child(this.repo || "Choose a folder"))
+      .child(h_flex().gap(6).flex_wrap().items_center()
+        .children((this.repos ?? []).map((r, i) => chip(t, `repo-${i}`, r.name,
+          r.folders.includes(expandHome(this.repo)), (_e, cx) => { this.repo = r.path; this.keepDraft(cx); cx.notify(); }, r.path)))
+        .when(this.repos === null, (el) => el.child(div().text_size(11.5).text_color(t.dim).child("Finding open repos…")))
         .child(button(t, "pick-repo", "Choose…", "secondary", (_e, cx) => cx.spawn(async (cx) => {
           const folder = await pickFolder({ prompt: "Use this repository" });
           if (folder) { this.repo = folder; this.keepDraft(cx); cx.notify(); }
         }))))
+      .child(div().pt(6).truncate().text_size(11.5).text_color(this.repo ? t.muted : t.dim)
+        .child(this.repo || "Choose a repo open in Herdr, or a folder"))
       .child(label("Agents that may do it"))
       .child(h_flex().gap(6).flex_wrap().children(data.catalog.agents.map((a) => {
         const missing = this.installed && !this.installed.has(a.id);
