@@ -189,8 +189,8 @@ more, and comes after v1.
 - Jobs are taken by priority, then age.
 - Among a job's routes whose pool is open and worth running, pick the highest `urgency`. Ties go
   to the order of the job's `agents` list.
-- A job close to its `deadline` with no pool worth running may be proposed on any **open** pool,
-  with the reason recorded as `deadline`. It still never goes below the reserve.
+- (Not yet built.) A job close to its `deadline` with no pool worth running may be proposed on any
+  **open** pool, with the reason recorded as `deadline`. It still never goes below the reserve.
 - The rule's output is a proposal and a readiness status (Ready, Open, Not yet). It launches
   only once approved, and then only when you click Launch or, with auto-launch, when it is
   Ready.
@@ -334,21 +334,38 @@ mod's own state.
 {
   "about": "Find and fix flaky tests in myapp.",
   "prompt": "Run the test suite 5 times, list tests that flip, and fix the top one. Open a PR.",
-  "where": { "worktree": { "repo": "~/Code/myapp" } },  // default; or { "background": { "cwd" } } or { "space" }
-  "agents": ["claude", "codex"],                         // or a pinned pool: "claude:work"
+  "where": { "worktree": { "repo": "~/Code/myapp" } },  // the only target so far (or "repo": "…")
+  "agents": ["claude", "codex"],                         // agent ids; default ["claude"]
   "model": { "claude": "sonnet" },                       // optional pin; otherwise estimated
   "effort": { "claude": "medium" },                      // optional pin; otherwise estimated
-  "launch": "approve",                                   // default; or "auto" (launch when allowance frees up)
+  "launch": "approve",                                   // default; or "auto" (Auto on Save allocation)
   "permissions": "edit",                                 // profile each route maps to its agent's own flags
-  "priority": 2,                                         // 1 = highest
-  "repeat": "weekly",                                    // optional: re-queue after it runs
-  "deadline": "2026-12-05",                              // optional
-  "maxMinutes": 45                                       // stop and mark timed out
+  "priority": 2,                                         // 1 = highest; default 3
+  "pr": "review",                                        // "off" (default), "review" or "merge"
+  "base": "remote",                                      // "remote" (default), "local" or a branch name
+  "after": "add-schema-mfz1k2"                           // optional: the id (file name) of a job to wait for
 }
 ```
 
-A job that runs once leaves the queue when it ends. A repeating job is re-queued no earlier than
-its `repeat` period after its last run, and still waits for allowance. It keeps its saved allocation.
+The mod reads only the fields above. **Not yet built**, and ignored if a job file has them:
+
+```jsonc
+{
+  "where": { "background": { "cwd": "…" } },  // or { "space": … }: worktree is the only target
+  "agents": ["claude:work"],                  // a pinned pool: one account per provider for now
+  "repeat": "weekly",                         // re-queue after it runs
+  "deadline": "2026-12-05",                   // propose on any open pool as it nears
+  "maxMinutes": 45                            // stop and mark timed out
+}
+```
+
+An `after` that names no job file holds the job, with "isn't in the queue" on its row, so a
+typo doesn't launch it early. A job deleted from the queue doesn't hold anything up: the queue
+remembers deleted ids (the last 500) in `state.json` to tell the two apart.
+
+A job leaves the queue once it launches. When `repeat` is built, a repeating job will be
+re-queued no earlier than its `repeat` period after its last run, still waiting for allowance
+and keeping its saved allocation.
 `"launch": "auto"` in the file enables Auto on **Save allocation**. The estimate and
 allocation live in state.
 
@@ -374,15 +391,15 @@ explicit profile requires a mapping for the selected agent.
 - **Start**: through Herdr app commands and `hc`, as the existing app schedulers do:
   - worktree (default): Herdr's `worktree` mod `{branch, argv}` under
     `<worktrees.directory>/<repo>/`, branch `queue/<job>-<timestamp>`;
-  - background: `hc run --keep --cwd <dir> --label herdr-usage-queue.job=<id> -- <argv>`, no tab;
-  - space: `space.new {folder, argv, focus: false}`.
+  - background (not yet built): `hc run --keep --cwd <dir> --label herdr-usage-queue.job=<id> -- <argv>`, no tab;
+  - space (not yet built): `space.new {folder, argv, focus: false}`.
   Nothing takes focus.
 - **Prompt delivery**: as an argv argument where the agent supports it (`claude "<prompt>"`,
   `codex "<prompt>"`), otherwise typed in once the agent reports `idle`.
 - **Done**: the agent reported `done`/`idle` after its first `working`, and nothing has worked
   for 30s. **Blocked**: the agent reports `blocked` (a permission prompt); the job stays
-  `blocked`, a toast says so, and its pool slot stays taken until you answer or `maxMinutes`
-  passes.
+  `blocked`, a toast says so, and its pool slot stays taken until you answer (or, once it's
+  built, `maxMinutes` passes).
 - **History**: append-only JSONL per day:
   `queued → dispatched(pool, reason, readings) → running → done | failed | blocked | stopped | timedout`.
 
@@ -476,8 +493,8 @@ for: finished jobs at the bottom, then working, then waiting, latest on top.
 
   An agent with several pools (two Claude accounts, Antigravity's model groups) shows its best
   light and expands into one light per pool. Hovering shows headroom, waste and next reset.
-- **Add job**: a form (prompt, where, agents, permissions, priority, deadline, repeat), plus a
-  prompt that has an agent write a job file with you.
+- **Add job**: a form (prompt, title, repo, agents, permissions, priority, PR, wait for). Not yet
+  built: deadline and repeat in the form, and a prompt that has an agent write a job file with you.
 - **Pause** switch.
 
 A possible status-bar item is `1 needs allocation · 2 ready · 1 running`.

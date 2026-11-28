@@ -280,7 +280,22 @@ describe("waiting for another job", () => {
 
   test("the job file's \"after\" counts too, and a deleted job doesn't hold anything up", () => {
     expect(blockedBy(jobs[2], jobs, { jobs: {} }).why).toBe("isn't launched yet");
-    expect(blockedBy({ id: "z", after: "gone" }, jobs, { jobs: {} })).toBe(null);
+    expect(blockedBy({ id: "z", after: "gone" }, jobs, { jobs: {}, deleted: { gone: 5 } })).toBe(null);
+  });
+
+  test("an \"after\" that names no job, deleted or not, holds the job and says why", () => {
+    const wait = blockedBy({ id: "z", after: "typo" }, jobs, { jobs: {}, deleted: { gone: 5 } });
+    expect(wait).toMatchObject({ job: { id: "typo", title: "typo" }, missing: true });
+    expect(wait.why).toContain("no job file has that name");
+  });
+
+  test("Auto doesn't launch a job whose \"after\" names no job, but does once it was deleted", () => {
+    const state = { jobs: { z: { approval: { hash: "z", auto: true, route } } } };
+    const z = { id: "z", hash: "z", priority: 1, createdAt: 9, after: "typo" };
+    const judged = { claude: { light: "green", waste: 30, headroom: 40, urgency: 5 } };
+    expect(dueToLaunch([z], state, catalog, pools, judged)).toEqual([]);
+    state.deleted = { typo: 1 };
+    expect(dueToLaunch([z], state, catalog, pools, judged).map((j) => j.id)).toEqual(["z"]);
   });
 
   test("clearing a file dependency overrides it until the file changes", () => {
