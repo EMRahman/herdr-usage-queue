@@ -120,7 +120,9 @@ To remove it, delete the `usage-queue` block from the layout file and the mod fo
 **Edit** (`"edit"`). You can also pick a profile when adding a job in Herdr. The selected agent
 uses its own permission flags for Plan and Edit. See [permission profiles](DESIGN.md#permission-profiles)
 for the mappings.
-`"after"` is the id (file name) of a job to wait for. `"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
+`"after"` is the id (file name, without `.json`) of a job to wait for. If no job file has that
+id, the job waits and its row says so, so a typo doesn't launch it early; a job you deleted
+doesn't hold anything up. `"pr"` is `"off"` (default), `"review"` (open a PR and address reviews) or `"merge"` (and merge
 it on a 👍); it needs the GitHub CLI (`gh`) signed in.
 
 `"base"` is the commit the job starts from, taken at launch: `"remote"` (default: fetch, then the

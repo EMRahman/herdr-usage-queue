@@ -247,11 +247,16 @@ export function waitFor(job, state) {
 }
 
 /** The job this one waits for, if it isn't finished:
- *  { job, why }. A job that's gone doesn't hold anything up. */
+ *  { job, why }. A job deleted from the queue doesn't hold anything up. An id that was never in
+ *  the queue (a typo in a job file, say) does, so the job doesn't launch early: it waits until
+ *  that job turns up or you pick something else under "Wait for". */
 export function blockedBy(job, jobs, state, after = waitFor(job, state)) {
   if (!after || after === job.id) return null;
   const first = jobs.find((j) => j.id === after);
-  if (!first) return null;
+  if (!first) {
+    if (state.deleted?.[after]) return null;
+    return { job: { id: after, title: after }, why: "isn't in the queue: no job file has that name", missing: true };
+  }
   const entry = state.jobs?.[after];
   if (isFinished(entry)) return null;
   const w = entry?.launched?.pr;

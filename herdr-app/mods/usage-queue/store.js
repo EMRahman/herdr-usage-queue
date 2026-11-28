@@ -118,9 +118,16 @@ export async function rewriteJob(job, change) {
   return hashText(next);
 }
 
+/** How many deleted job ids to remember, so jobs waiting on them know they're gone, not mistyped. */
+const DELETED_KEPT = 500;
+
 export async function deleteJob(id) {
   await fs.unlink(`${paths().jobs}/${id}.json`);
-  await updateState((s) => { delete s.jobs[id]; });
+  await updateState((s) => {
+    delete s.jobs[id];
+    s.deleted = Object.fromEntries(Object.entries({ ...(s.deleted ?? {}), [id]: Date.now() })
+      .sort((a, b) => b[1] - a[1]).slice(0, DELETED_KEPT));
+  });
 }
 
 /** Saves one estimate run's prompt and output; resolves with the file's path. */
